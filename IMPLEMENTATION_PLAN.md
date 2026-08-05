@@ -1,438 +1,427 @@
-# Chart Trade Overlay — Implementation Plan
+# TradePilot — Chrome Extension Implementation Plan
 
 **Status:** Planning only. No implementation started.
 **Date:** 2026-08-05
-**Goal:** A Zing-style on-chart trade widget — TP pill above, "Suggested / <strike> / [Trade]" card at the live entry price, SL pill below — where the entry marker rides the live price and TP/SL auto-derive from market structure, and one click places the order through our own wrapper API.
-**Overriding requirement from the user: RELIABILITY.** Every phase below carries an explicit *Reliability Requirements* block, and §7 defines the engineering standard those blocks are measured against. Nothing in this plan ships without meeting it.
+**Decision:** **Chrome extension is Phase 1.** Targets: **Kotak Neo (priority)** and **TradingView.com**. The in-app overlay on `quantboard-pandapath` is deferred to Phase 2 — it is *not* part of the first delivery.
 
-**Descoped by user decision:** SEBI algo-registration and broker/TradingView policy constraints. This is a personal-use tool, not a public product, and orders route through our own wrapper API. I raised these in the previous revision; you've made the call, so they are recorded once in §8.6 as a note and are not treated as blockers anywhere else in this plan.
+**Goal:** A Zing-style on-chart widget — TP pill above, `Suggested / <strike> / [Trade]` card riding the live price, SL pill below — injected onto charts we don't own, with one-click execution through our own wrapper API.
 
----
+**Overriding requirement: RELIABILITY.** Every phase carries an explicit *Reliability Requirements* block. §7 defines the standard they are measured against. Nothing merges without meeting it.
 
-## 1. TL;DR — the decision
-
-I reviewed `C:\Users\sujay\CKProjects\quantboard-pandapath`. **It changes the recommendation completely.**
-
-That project already contains almost every hard part of this feature. It is not a greenfield build — it is an increment on working code.
-
-| | **Track A — in-app overlay** (`quantboard-pandapath`) | **Track B — Chrome extension** (tradingview.com / Kotak Neo / Dhan) |
-|---|---|---|
-| Chart API | `lightweight-charts` v5.2 — **documented, semver-stable, already in use** | Undocumented internals, reverse-engineered |
-| Can it break without warning? | **No.** We pin the version. | **Yes.** Any vendor deploy can break it. |
-| Code we control | 100% | ~0% of the host page |
-| Backend / levels / orders | **Already built** (§2) | Would call the same backend, over the network |
-| Distribution | `npm run dev`, it's our app | Load-unpacked, per-browser |
-| Effort to first working widget | **~3–4 days** | ~2 weeks |
-| Reliability ceiling | **Very high** | Medium at best |
-
-### Recommendation
-
-> **Build Track A first.** It is faster, dramatically more reliable, and it is the only place where the whole loop — live price → levels → widget → order → position — is under our control end to end.
->
-> **Then Track B**, reusing the exact same backend contracts and the exact same visual component. By then the widget is proven and the extension is only an adapter problem.
-
-The two tracks share ~70% of the work if we design the boundary correctly from day one (§6). Building A first is therefore not a detour — it is the cheapest possible way to de-risk B.
+**Noted once, not treated as a blocker:** I recommended building on our own chart first because vendor internals can break without warning (§8.1). That recommendation was considered and overruled — extension first. The plan below therefore invests heavily in the **capability probe + degradation ladder** (§5.4, R-P2), which is how we make an inherently fragile integration behave predictably. SEBI/vendor-policy constraints are descoped per your decision (personal use, own wrapper API) — recorded once in §8.6.
 
 ---
 
-## 2. What already exists in `quantboard-pandapath`
+## 1. The plan in one page
 
-This is the single most important section in the document. **Do not rebuild any of it.**
+```
+Phase 1  ── CHROME EXTENSION ────────────────────────────────────────────
+  P0  Discovery      TradingView ✅ already verified  ·  Kotak ⏳ needs probe
+  P1  Skeleton       MV3 + Vite + TS strict, Shadow DOM, messaging, popup
+  P2  ChartBridge    interface + TradingViewSiteBridge (verified working)
+  P3  Widget UI      TP pill / Suggested card / SL pill — matches the design
+  P4  Anchoring      widget tracks live price + levels through the bridge
+  P5  Data           service worker → our FastAPI → suggestion + levels
+  P6  Trade          entry order via our wrapper; TP/SL enforced by our engine
+  P7  Kotak adapter  KotakNeoBridge (unblocks when the probe lands)
+  P8  Hardening      §7 checklist + full-session soak
+                                                          ≈ 12–14 days
 
-### 2.1 Frontend — `apps/web` (Next.js 16, React 19, TypeScript)
+Phase 2  ── IN-APP OVERLAY (deferred) ───────────────────────────────────
+  Port the same widget into quantboard-pandapath's LiveOI chart.
+  ~3 days, because P3/P4/P5/P6 are already built and reusable.
+```
 
-| Capability | Location | Notes |
-|---|---|---|
-| Chart engine | `lightweight-charts@^5.2.0` | TradingView's **open-source** library. Documented public API. |
-| Main chart | `src/components/Chart/LiveOIChart.tsx` (48 KB) | The real one. OI overlay, view modes, tooltips. |
-| Simple chart | `src/components/Chart/TradingChart.tsx` | Candles + pivot S/R price lines. |
-| **`priceToCoordinate` already in use** | `LiveOIChart.tsx:437,445,520,769,773` | ✅ The exact price→pixel primitive this feature needs. **No reverse engineering required.** |
-| **rAF overlay render loop** | `LiveOIChart.tsx:566-572` | Already solves "lightweight-charts has no Y-axis-scroll event" — the canvas overlay redraws every frame. |
-| **Entry / TP / SL price lines** | `LiveOIChart.tsx:648-730` | Per open position, colored by strategy, with P&L in the label. |
-| **Drag-to-adjust TP/SL** | `LiveOIChart.tsx:753-800+` | Capture-phase mousedown, hit-test within `DRAG_HIT_PX`, disables `handleScroll`/`handleScale` during drag, and the poll skips a line that is mid-drag. Comment literally says *"Kotak/Lemon-style"*. |
-| Support / Resistance lines | `LiveOIChart.tsx:732-751` | Fed by OI-derived `support_strike` / `resistance_strike` from the backend. |
-| Pivot S/R (client-side) | `TradingChart.tsx:13-31` `dailyPivotLevels()` | Floor-trader pivots; mirrors `services/banknifty/levels.py`. |
-| Premium↔spot mapping | `premiumToSpot(pos, price)` in `LiveOIChart.tsx` | Uses option **delta** to project a premium-space TP/SL onto the spot price scale. Non-trivial, already solved. |
-| Suggestion banner | `src/components/TradeRecommendationLine.tsx` | Polls `/v1/paper/recommend` every 5s, renders direction, symbol, LTP, SL, TP, score, rationale. **This is the widget's data, just rendered as a text bar instead of an on-chart card.** |
-| API client | `src/lib/paperClient.ts` + types `ChartPosition`, `ChartStateResponse` | Typed. |
-| Styling | CSS Modules (`*.module.css`) + `lucide-react` icons | Existing dark theme. |
+**Key sequencing decision:** build against **TradingView first**, even though Kotak is the priority target. Reason — I have already verified TradingView's chart API works end to end (§4.1), and it needs **no login**, so P1–P6 can start today and run at full speed. The Kotak adapter (P7) is a self-contained ~2-day slot that drops in the moment the probe output arrives. **Nothing is blocked waiting on Kotak.**
 
-### 2.2 Backend — `apps/api` (FastAPI) + `services/`
+---
 
-| Endpoint | What it returns / does |
+## 2. What we are building on top of (already exists — do not rebuild)
+
+`C:\Users\sujay\CKProjects\quantboard-pandapath` already provides the entire backend. The extension is a **client** of it.
+
+| Endpoint | Role in the extension |
 |---|---|
-| `GET /v1/paper/chart/state` | **Everything the chart needs in one call**: `spot`, `atm_strike`, `strike_interval`, `lot_size`, `expiry`, `is_fresh`, `trader` status, `strategies[]` with signals, and `positions[]` each annotated with `sl`, `tp`, `entry_spot`, `risk_pts`, `reward_pts`, `rr_ratio`, `delta`, `unrealized_pnl`. |
-| `GET /v1/paper/recommend` | `{trade_recommended, direction, recommended_symbol, recommended_ltp, recommended_option_type, sl, tp, composite_score, rationale[], no_trade_reason}` |
-| `POST /v1/paper/manual/order` | `PlaceOrderRequest{direction, lots, order_type, limit_price, sl, tp, strike, option_type, strategy}` — **this is the "Trade" button's target.** |
-| `POST /v1/paper/position/risk` | `UpdateRiskRequest{position_id, account, sl, tp}` — **this is drag-to-adjust's target.** |
-| `POST /v1/paper/manual/square_off`, `/manual/flatten` | Exit paths. |
-| `POST /v1/execution/execute`, `/halt`, `/resume` | Live execution + kill switch. |
-| `GET /v1/paper/chain` | Option chain. |
+| `GET /v1/paper/chart/state` | spot, `atm_strike`, `strike_interval`, `lot_size`, `expiry`, `is_fresh`, open `positions[]` with `sl`/`tp`/`entry_spot`/`delta`/`unrealized_pnl` |
+| `GET /v1/paper/recommend` | `direction`, `recommended_symbol`, `recommended_option_type`, `recommended_ltp`, `sl`, `tp`, `composite_score`, `rationale[]` |
+| `POST /v1/paper/manual/order` | **the Trade button** — `{direction, lots, order_type, strike, option_type, sl, tp, strategy}` |
+| `POST /v1/paper/position/risk` | drag-to-adjust TP/SL on an open position |
+| `POST /v1/paper/manual/square_off` / `/flatten` | exits |
+| `POST /v1/execution/execute` / `/halt` / `/resume` | live execution + kill switch |
 
-### 2.3 Broker wrapper — this is the "custom wrapper API" you referred to
+Order path: `FastAPI → packages/contracts/broker.py (BrokerPort) → broker_kotak_neo / broker_upstox`. The extension **never** talks to a broker. It talks to our API. Adding a broker later is one adapter file, no extension change.
 
-```
-packages/contracts/broker.py        BrokerPort: place_order(OrderIntent) → str
-                                              modify_order(order_id, new_price) → bool
-                                              cancel_order(order_id) → bool
-packages/broker_kotak_neo/adapter.py         Kotak Neo (direct)
-packages/broker_kotak_neo_remote/adapter.py  Kotak Neo (remote/proxied)
-packages/broker_upstox/                      Upstox
-services/execution/engine.py                 execution engine + halt/resume
-services/execution/broker_settings_store.py  credentials/config
-```
+Exit management: `services/trade_management/manager.py` — a 9-stage exit framework (`EXIT_HARD_STOP`, `EXIT_TIME_STOP`, `EXIT_PARTIAL_T1`, …) already evaluated against live price. **This is what enforces our TP/SL** — see §3.
 
-The port/adapter split is already correct. The Trade button **never** touches a broker — it calls our own FastAPI route, which calls `BrokerPort`. Adding another broker later is one adapter file.
-
-### 2.4 Levels & analytics already present
-
-`services/banknifty/levels.py`, `services/banknifty/suggestion_engine.py`, `services/price_action/{analyzer,engine,feeder}.py`, `services/liquidity_engine/`, `services/regime_classifier/`, `services/trade_management/manager.py`, `services/signal_tournament/`.
-
-### 2.5 Therefore — the actual gap
-
-Everything below the UI exists. **The gap is exactly three things:**
-
-1. **A pre-trade suggestion has no on-chart representation.** Price lines are drawn only for *open positions*. The *suggestion* is a text banner. We need it on the chart, at the price, before entry.
-2. **No HTML widget layer.** TP/SL are lightweight-charts `PriceLine` objects (a line + an axis label). The Zing design needs real DOM: rounded pills, a card with a logo and a `Trade` button, hover states, a `×`. `PriceLine` cannot render that.
-3. **Nothing tracks live price continuously as a *suggestion*.** `entry_spot` is fixed at fill time. We need an entry marker that rides the live price until the user commits.
-
-**That's the build. It is small, and it sits on top of proven code.**
+Levels: `services/banknifty/levels.py`, `suggestion_engine.py`, `services/price_action/`, OI-derived S/R.
 
 ---
 
-## 3. Track A — in-app overlay (PRIMARY)
+## 3. Critical design correction — TP and SL are OURS, not the broker's
 
-Target: `apps/web/src/components/Chart/` in `quantboard-pandapath`.
+You observed that charts won't let you set SL and TP together. That is not a Kotak bug and not a chart limitation. It is structural across Indian brokers:
 
-### 3.1 Architecture
+- The order type that carries a target *and* a stop as linked OCO legs is the **Bracket Order**.
+- Brokers killed BO around **March 2020**: in volatile conditions both legs could fire — price ticks the stop, then instantly the target, both execute, and you're left holding an unintended *short*. SEBI's July 2020 peak-margin rules then removed the leverage that made BO commercially worthwhile.
 
-A **DOM overlay layer** absolutely positioned over the chart container, siblings with the existing OI canvas. Not canvas — we need real buttons, hover, focus, and text.
-
-```
-<div class={styles.chartWrap}  position: relative>
-  <div ref={chartContainerRef} />                      ← lightweight-charts (unchanged)
-  <canvas ref={canvasRef} class={styles.oiOverlay} />  ← existing OI overlay (unchanged)
-  <TradeWidgetLayer                                    ← NEW: pointer-events:none container
-      chart={chartRef.current}
-      series={seriesRef.current}
-      suggestion={suggestion}
-      onTrade={placeOrder}
-      onAdjust={updateRisk} />
-</div>
-```
-
-**Positioning primitive — the whole feature in four lines:**
-
-```ts
-const y   = series.priceToCoordinate(price);              // documented, stable
-const x   = chart.timeScale().timeToCoordinate(lastTime); // documented, stable
-const w   = chart.timeScale().width();                    // for right-edge anchoring
-// → transform: translate3d(x, y, 0) on an absolutely-positioned element
-```
-
-Both return `null` when the price/time is outside the visible range. **`null` is not an error — it is the signal to hide that element.** Every call site must handle it explicitly; see §7.
-
-### 3.2 New files
+**Consequence for this design:**
 
 ```
-apps/web/src/components/Chart/TradeWidget/
-├── TradeWidgetLayer.tsx        # container; owns the rAF sync loop; pointer-events:none
-├── SuggestionCard.tsx          # "⚡ Suggested / 24120 CE / [Trade]"
-├── LevelPill.tsx               # reusable TP/SL pill (variant: 'tp' | 'sl')
-├── useChartAnchor.ts           # hook: (price) → {x, y, visible}; rAF-synced
-├── useLiveSuggestion.ts        # hook: polls/streams /recommend + /chart/state, merges, debounces
-├── useDragLevel.ts             # drag a pill vertically → price (reuses the LiveOIChart pattern)
-├── TradeWidget.module.css      # all styling, CSS variables
-└── types.ts                    # Suggestion, AnchorPoint, WidgetState
+[Trade] click  →  POST /manual/order      — ENTRY ONLY. Plain MARKET/LIMIT.
+TP / SL        →  our levels, stored with the position, NOT sent as broker legs
+Enforcement    →  services/trade_management/manager.py monitors live price
+                  and fires square_off when either level is touched
 ```
 
-**Only one existing file is touched:** `LiveOIChart.tsx` gains the `<TradeWidgetLayer/>` sibling and passes `chartRef`/`seriesRef` down. That is the entire integration surface — deliberately, so the widget can be removed by deleting one line.
+This is almost certainly what Zing does too — their screenshot shows both TP and SL, which no Indian broker will accept as a single native order.
 
-### 3.3 The anchor loop (`useChartAnchor`)
+**It is an advantage, not a workaround.** Broker brackets are rigid. Our engine already does trailing, time stops, and partial exits — things a bracket order cannot express.
 
-The existing code already proves the pattern: lightweight-charts emits no event for Y-axis scroll, so `LiveOIChart.tsx:566` runs a permanent `requestAnimationFrame` loop. We **join that existing loop** rather than starting a second one.
-
-```ts
-// Called from inside the existing renderLoop, once per frame:
-function syncAnchors() {
-  const s = seriesRef.current, ts = chartRef.current?.timeScale();
-  if (!s || !ts) return;                       // chart torn down mid-frame — bail, don't throw
-
-  for (const anchor of anchors) {
-    const y = s.priceToCoordinate(anchor.price);
-    const x = anchor.pinRight ? ts.width() - RIGHT_GUTTER : ts.timeToCoordinate(anchor.time);
-
-    if (y == null || x == null) { hide(anchor); continue; }   // off-screen → hide, never guess
-    if (Math.abs(y - anchor.lastY) < 0.5 &&
-        Math.abs(x - anchor.lastX) < 0.5) continue;           // sub-pixel → skip the write
-
-    anchor.el.style.transform = `translate3d(${x}px, ${y}px, 0)`;   // compositor only
-    anchor.lastX = x; anchor.lastY = y;
-  }
-}
-```
-
-**Reliability Requirements — R-A1**
-- `transform` only. **Never** `top`/`left` — that triggers layout inside the chart's own render frame and will visibly stutter the candles.
-- Sub-pixel skip (`< 0.5px`) so a still chart does zero DOM writes. Idle CPU cost must be ~0.
-- `null` from either conversion → **hide the element**. Never fall back to a stale or extrapolated coordinate; a widget showing a wrong price is worse than a widget showing nothing.
-- Guard every frame against a torn-down chart (`seriesRef.current` null). React StrictMode double-mounts in dev — this *will* happen.
-- One rAF loop for the whole chart. Adding a second is a defect.
-- Budget: **< 0.3 ms per frame** for the whole layer, verified in the Performance panel with 3 levels + 2 open positions on screen.
-
-### 3.4 Data flow (`useLiveSuggestion`)
-
-```
-GET /v1/paper/chart/state   → spot, atm_strike, strike_interval, lot_size, expiry, is_fresh, positions[]
-GET /v1/paper/recommend     → direction, recommended_symbol/option_type/ltp, sl, tp, score, rationale
-        ↓ merge + validate + debounce
-   Suggestion { entryPrice, strikeLabel, tp, sl, direction, score, rationale, stale }
-        ↓
-   TradeWidgetLayer → SuggestionCard @ entryPrice, LevelPill(tp) @ tp, LevelPill(sl) @ sl
-```
-
-`TradeRecommendationLine.tsx` already polls `/recommend` at 5s. Keep that cadence for **levels**; drive the **entry marker** off the live spot in `chart/state` / the existing tick stream, so the card feels alive while the levels stay deliberate.
-
-**Reliability Requirements — R-A2**
-- **Single in-flight request per endpoint.** Abort the previous with `AbortController` before issuing the next. A slow response must never overwrite a newer one (classic last-write-wins bug in the existing 5s-interval pattern).
-- **Staleness is visible, not silent.** `chart/state` already returns `is_fresh`. If `is_fresh === false`, or the last successful poll is older than 15s, the widget **dims and shows `stale`, and the Trade button is disabled.** Never render a confident-looking price we can't vouch for.
-- **Backoff on failure:** 5s → 10s → 20s → 30s cap, reset on first success. Do not hammer a dead API every 5s for an hour.
-- **Validate every payload at the boundary.** A type guard, not a cast. `sl`/`tp`/`ltp` are `Optional[float]` server-side and *will* be `null`; `NaN` must never reach `priceToCoordinate`.
-- **Never render a partial suggestion.** Missing `tp` → hide the TP pill, keep the rest. Missing `entry` → hide the whole widget. Explicit per-field decisions, no `?? 0`.
-- Poll only when the tab is visible (`document.visibilityState`) and the market is open (`services/price_action/market_hours.py` already knows).
-
-### 3.5 The Trade button
-
-```ts
-POST /v1/paper/manual/order
-{ direction, lots, order_type: 'MARKET', strike, option_type, sl, tp, strategy: 'chart-widget' }
-```
-
-**Reliability Requirements — R-A3 (highest-stakes code in the project)**
-- **Idempotency key** on every submit (`clientOrderId = uuid`). A double-click, a retry, or a flaky network must not place two orders. If the backend doesn't dedupe yet, add it there — this is a backend change, and it is required, not optional.
-- **Disable-on-submit, always.** Button → `pending` on click, re-enabled only on a terminal response. No exceptions.
-- **Never auto-retry a POST.** Ambiguous timeout → show `Unknown — check positions`, link to the positions view. An automatic retry on an order endpoint can double a position; that is the single worst failure mode this system has.
-- **Confirm step** showing strike, side, lots, entry, SL, TP, and computed risk in ₹, before anything is sent. Small modal or a two-stage button. Cheap to build; prevents the expensive mistake.
-- **Freeze the suggestion on hover/focus of the Trade button.** Levels must not shift under the cursor between the decision and the click. This is a correctness requirement, not polish.
-- **Reject stale submits.** Stamp the suggestion with the price it was computed at; if live price has moved more than a configured slippage tolerance since, block and re-prompt.
-- Failure → inline error on the card with the server's message, and the widget stays usable. Never a silent `.catch(() => {})` — the existing `TradeRecommendationLine.tsx:14` swallows errors, and that pattern must not be copied here.
-
-### 3.6 Drag-to-adjust
-
-Reuse the proven approach in `LiveOIChart.tsx:753+`: capture-phase listener on the container, hit-test against `priceToCoordinate` of each level within `DRAG_HIT_PX`, `stopPropagation()`, disable `handleScroll`/`handleScale` for the drag, restore on mouseup. For a *pre-trade* suggestion the drag pins the level locally; for an *open position* it calls `POST /v1/paper/position/risk` on release.
-
-**Reliability Requirements — R-A4**
-- Pointer capture, not window listeners — no leaks, no lost-mouse-outside-window.
-- **A poll landing mid-drag must not yank the line.** The existing code already handles this (`dragRef.current?.positionId === pos.id`); replicate exactly.
-- Always restore `handleScroll`/`handleScale` in a `finally`. If a drag throws and leaves the chart unpannable, the whole app looks broken.
-- Snap to tick size; validate SL/TP stay on the correct side of entry; reject and revert an invalid drag with a visible reason.
-- Optimistic UI, **but reconcile**: if the server rejects the new level, snap back and say why.
-
-### 3.7 Track A phases
-
-| # | Deliverable | Reliability gate | Est. |
-|---|---|---|---|
-| **A1** | `TradeWidgetLayer` + `useChartAnchor` + static mock suggestion. Pills and card render at hardcoded prices, follow pan/zoom/scale perfectly. | R-A1 met; 0 dropped frames while panning; nothing rendered off-screen | 1 day |
-| **A2** | Visual polish to match the reference image: pills, card, Trade button, hover/glow, collapse, `×`. | Renders identically at 80%/100%/150% zoom, dpr 1 and 2; no layout shift | 1 day |
-| **A3** | `useLiveSuggestion` — real data from `/recommend` + `/chart/state`. Entry rides live price; levels update with hysteresis. | R-A2 met; survives API down, API slow, `null` fields, market closed | 1 day |
-| **A4** | Trade button → `POST /manual/order`, with confirm, idempotency, freeze-on-hover. | R-A3 met **in full**; double-click test placed exactly one order | 1 day |
-| **A5** | Drag-to-adjust TP/SL on both suggestions and open positions. | R-A4 met | 0.5 day |
-| **A6** | Hardening pass: the §7 checklist, the §9 test matrix, a full trading-session soak. | All of §7 | 1 day |
-
-**Track A total ≈ 5.5 days.**
+**Reliability Requirements — R-OCO**
+- The widget must never imply the broker is holding the stop. Label it as *our* managed exit.
+- If our backend is unreachable while a position is open, **the position is unprotected.** The widget must say so, loudly and unmissably — a red banner, not a subtle tint. This is the single most dangerous state in the system.
+- Exit monitoring lives in the backend, never in the extension. A closed browser tab must never disable a stop-loss. Non-negotiable.
+- Extension shows the *engine's* view of SL/TP, never a locally-cached guess.
 
 ---
 
-## 4. Track B — Chrome extension (SECONDARY)
+## 4. Verified research
 
-For charts we don't own: `tradingview.com`, Kotak Neo web, Dhan, etc. Build **after** Track A, reusing the same backend and the same visual design.
+### 4.1 TradingView.com — CONFIRMED WORKING
 
-### 4.1 Verified research — tradingview.com
+I inspected a live `tradingview.com/chart/` page. Measured, not assumed:
 
-I inspected a live `tradingview.com/chart/` page. These are measured facts.
-
-- The chart is **same-document** (no iframe); 7 canvases; **candles are canvas-only** — no per-candle DOM, so pixel positions must be computed, never read.
-- **The price axis is also canvas** — no DOM text fallback for the scale. The **legend is DOM** (`"O 309.36 H 311.71 L 305.67 C 309.73"`), usable as a fallback for *values* but not for pixel mapping.
-- `window.TradingViewApi` exists and works:
+- Chart is **same-document** (no iframe). 7 canvases. **Candles are canvas-only** — no per-candle DOM, so pixel positions must be computed, never read.
+- **Price axis is canvas too** — no DOM fallback for the scale. The **legend is DOM** (`"O 309.36 H 311.71 L 305.67 C 309.73"`) — usable for *values*, not for pixel mapping.
 
 ```js
 const chart = window.TradingViewApi.activeChart();
 const pane  = chart.chartWidget().paneWidgets()[0];
 const scale = pane.state().defaultPriceScale();
-scale.priceToCoordinate(100);          // → 1639.32   ✅ verified
-scale.coordinateToPrice(y);            // inverse, for drag
+scale.priceToCoordinate(100);        // → 1639.32   ✅ verified
+scale.coordinateToPrice(y);          // inverse, for drag-to-set-level
 
 const ts = chart.chartWidget().model().model().timeScale();
 ts.indexToCoordinate(ts.visibleBarsStrictRange().lastBar());   // → 1106  ✅ verified
 
 const bars = chart.chartWidget().model().model().mainSeries().bars();
-bars.valueAt(bars.lastIndex());   // → [1785936600, 309.36, 311.71, 305.67, 309.61, 23707268] ✅
+bars.valueAt(bars.lastIndex());
+// → [1785936600, 309.36, 311.71, 305.67, 309.61, 23707268]     ✅ verified
 
-pane.canvasElement().getBoundingClientRect();   // {x:56, y:42, w:1109, h:611.33} — pane→viewport offset
+pane.canvasElement().getBoundingClientRect();   // {x:56,y:42,w:1109,h:611.33}
 chart.onVisibleRangeChanged() / onSymbolChanged() / onIntervalChanged() / onDataLoaded()
-chart.createShape({time, price}, {shape:'horizontal_line'})    // native lines, if we want them
 ```
 
-So the same `viewportX = paneRect.x + indexToCoordinate(i)`, `viewportY = paneRect.y + priceToCoordinate(p)` formula works. **Feasible — but every one of those names is undocumented and minified (the widget class came back as `Hp`). TradingView can rename any of it in any deploy.** That is the reliability gap versus Track A, and no amount of care closes it.
+Formula: `viewportX = paneRect.x + indexToCoordinate(i)`, `viewportY = paneRect.y + priceToCoordinate(p)`.
 
-### 4.2 Kotak Neo and other broker platforms
+⚠️ Every one of those names is **undocumented and minified** (the widget class came back as `Hp`). TradingView can rename any of it in any deploy. This is why P2 ships a probe and a degradation path *before* anything depends on it.
 
-Kotak Neo's web platform uses **TradingView-powered charts** — i.e. the licensed *Advanced Charts* library, fed by Kotak's own datafeed. Kotak Neo is also a TradingView broker partner, so its users can already trade from tradingview.com charts.
+### 4.2 Kotak Neo — BLOCKED, needs your 60-second probe
 
-For us this is **better than tradingview.com**, because embedded Advanced Charts exposes the library's **documented public API** (`widget.activeChart()`, `priceScale().priceToCoordinate()`) rather than site internals. Same story for Dhan and most Indian brokers.
+Kotak Neo's web platform uses **TradingView Advanced Charts** — the licensed library, fed by Kotak's own datafeed. That is *better* than tradingview.com: Advanced Charts has a **documented public API**, and the widget is conventionally exposed as `window.tvWidget`.
 
-**But it cannot be planned any further without a login.** Four questions decide the entire implementation and none can be answered from outside:
+I could not verify it. Brokerage sites are blocked by browsing policy in both available browsers — not overridable, and a sensible guardrail on a live-money account.
 
-1. Is the chart in an **iframe**? (→ `all_frames: true`, cross-frame messaging, or a dead end)
-2. Which global holds the widget? (`window.tvWidget`, a module-scoped var, or nothing reachable)
-3. Does `widget.activeChart().priceScale().priceToCoordinate()` actually work there?
-4. What does the DOM around the chart container look like, and how stable are its class names?
+**Four questions gate P7. None can be answered from outside:**
 
-**→ B0: a 0.5-day discovery spike per platform, requiring a logged-in account.** Everything downstream depends on its output. Do not estimate Track B for a given broker before this spike runs.
+1. Is the chart inside an **iframe**? (→ `all_frames: true` + cross-frame messaging, or a dead end)
+2. Which global holds the widget? (`window.tvWidget`, something else, or nothing reachable)
+3. Does `priceToCoordinate` work there?
+4. What is the pane geometry / DOM shape around the chart?
 
-### 4.3 Extension architecture (once B0 answers are in)
+**Run this in the Console on a Kotak NIFTY chart (F12 → Console). Read-only — it reads properties and calls a pure coordinate function. It places nothing and clicks nothing. Result lands on your clipboard.**
 
-The critical structural decision: **quarantine everything fragile behind one interface.**
+```bash
+copy(JSON.stringify((()=>{const o={url:location.href};o.iframes=[...document.querySelectorAll('iframe')].map(f=>({src:(f.src||'').slice(0,100),w:f.clientWidth,h:f.clientHeight}));o.canvases=[...document.querySelectorAll('canvas')].map(c=>({w:c.width,h:c.height,p:(c.parentElement?.className||'').toString().slice(0,50)}));const g=[];for(const k of Object.keys(window)){try{const v=window[k];if(v&&typeof v==='object'&&typeof v.activeChart==='function')g.push(k)}catch(e){}}o.widgetGlobals=g;o.tvWidget=typeof window.tvWidget;o.TradingView=typeof window.TradingView;const w=window.tvWidget||(g[0]?window[g[0]]:null);if(w){try{const c=w.activeChart();o.symbol=c.symbol();o.resolution=c.resolution();const ps=c.chartWidget().paneWidgets()[0].state().defaultPriceScale();o.priceToCoordinate=ps.priceToCoordinate(24000);o.coordinateToPrice=ps.coordinateToPrice(100);o.paneRect=c.chartWidget().paneWidgets()[0].canvasElement().getBoundingClientRect().toJSON()}catch(e){o.probeErr=e.message}}return o})(),null,1))
+```
+
+If `iframes` shows the chart is inside one, switch the Console's frame dropdown (labelled `top`) to the chart frame and re-run.
+
+**P7 cannot be estimated beyond its ~2-day placeholder until this output exists.** Everything else proceeds regardless.
+
+---
+
+## 5. Architecture
+
+### 5.1 Execution contexts
+
+```
+┌─ MAIN world content script ── bridge.js ──────────────────────┐
+│  The ONLY code that touches host-page chart internals.        │
+│  TradingViewSiteBridge · KotakNeoBridge                        │
+│  Small, defensive, disposable. Fix here when a vendor deploys. │
+└──────────────── window.postMessage (nonced) ──────────────────┘
+┌─ ISOLATED world content script ── content.js ─────────────────┐
+│  Shadow DOM host · widget UI · anchoring · drag · storage      │
+│  Knows nothing about TradingView or Kotak. Talks to a bridge.  │
+└──────────────── chrome.runtime messaging ─────────────────────┘
+┌─ Service worker ── background.js ─────────────────────────────┐
+│  All network. host_permissions bypass CORS for our API.        │
+│  Poll/stream suggestions · submit orders · idempotency keys    │
+└───────────────────────── HTTP ────────────────────────────────┘
+                    our FastAPI → BrokerPort → Kotak Neo
+```
+
+Why the MAIN/ISOLATED split: `window.TradingViewApi` and `window.tvWidget` live in the **page's** JS world. Content scripts run in an **isolated** world and cannot see them. A manifest-declared `world: "MAIN"` content script (Chrome 111+) is CSP-exempt and solves it. Injecting a `<script src>` tag will be blocked by the host CSP — don't try.
+
+**This split is the most important decision in the project.** It quarantines all reverse-engineered surface behind one replaceable file. Enforced by lint: nothing outside `src/bridge/**` may reference `TradingViewApi` or `tvWidget`.
+
+### 5.2 The ChartBridge interface
 
 ```ts
 interface ChartBridge {
+  readonly id: 'tradingview-site' | 'kotak-neo' | 'lightweight-charts';
   isAvailable(): boolean;
-  priceToY(price: number): number | null;
+  probe(): ProbeResult;                       // capability self-test, see §5.4
+  priceToY(price: number): number | null;     // viewport px, null = off-screen
   yToPrice(y: number): number | null;
   timeToX(time: number): number | null;
   lastBar(): { time: number; close: number } | null;
-  onChange(cb: (reason: 'range'|'symbol'|'interval'|'resize') => void): () => void;
+  symbol(): string | null;
+  onChange(cb: (r: 'range'|'symbol'|'interval'|'resize') => void): () => void;
 }
 ```
 
-Three implementations, one UI:
-- `LightweightChartsBridge` — **Track A**, ~20 lines, documented API
-- `TradingViewSiteBridge` — `window.TradingViewApi`, MAIN world
-- `BrokerAdvancedChartsBridge` — per-broker, public library API
+Three implementations, one widget. Phase 2's `LightweightChartsBridge` is ~20 lines over the documented API — which is why the in-app port later costs ~3 days, not 12.
 
-Chrome specifics: MV3, `minimum_chrome_version: 111`. `window.TradingViewApi` lives in the page's JS world, which content scripts **cannot** see — so we need a `world: "MAIN"` content script (manifest-declared, CSP-exempt) for the bridge, and a normal ISOLATED content script for the UI, talking over a nonced `window.postMessage` protocol. Injecting a `<script src>` tag will be blocked by the host CSP; don't try.
+### 5.3 Folder structure
 
-**Reliability Requirements — R-B1**
-- **Capability probe on every page load.** Assert each bridge method exists *and* returns a plausible value (`priceToY(lastClose)` must land inside the pane rect). Log and report the result.
-- **Graceful degradation is mandatory.** Probe fails → the widget does **not** disappear and does **not** show wrong prices. It falls back to a fixed, draggable, manual-mode panel with a visible "chart link unavailable" badge. The product degrades; it never lies and never crashes the host page.
-- **Never throw into the host page.** Every bridge call wrapped; a bridge fault is a logged, contained event.
-- Pin a `knownGoodHostBuild` marker and log mismatches so a vendor deploy is detectable within hours.
-- Single-injection guard (`window` flag **and** a DOM-id check — they fail in different situations: SPA nav vs. service-worker restart vs. multiple tabs).
-- Full teardown on disable/navigate: remove the host element, disconnect every observer, release every listener. Verified by toggling 20× and watching for listener/heap growth.
+```
+TradePilot/
+├── src/
+│   ├── manifest.ts                 # typed manifest source of truth
+│   ├── background/
+│   │   ├── index.ts                # SW entry, lifecycle
+│   │   ├── ApiClient.ts            # our FastAPI; abort, backoff, idempotency
+│   │   ├── OrderService.ts         # ⚠ the money path — see R-P4
+│   │   └── MessageRouter.ts
+│   ├── bridge/                     # ⚠ ALL fragile code lives here
+│   │   ├── mainWorld.ts            # MAIN-world entry; selects an adapter
+│   │   ├── ChartBridge.ts          # the interface
+│   │   ├── adapters/
+│   │   │   ├── TradingViewSiteBridge.ts
+│   │   │   └── KotakNeoBridge.ts
+│   │   ├── CapabilityProbe.ts
+│   │   └── protocol.ts             # nonced postMessage envelope
+│   ├── content/
+│   │   ├── index.ts                # ISOLATED entry
+│   │   ├── Bootstrap.ts            # ready-gate → inject → observe → teardown
+│   │   ├── ChartReadyDetector.ts
+│   │   ├── SpaNavigationObserver.ts
+│   │   └── InjectionGuard.ts
+│   ├── widget/
+│   │   ├── ShadowHost.ts
+│   │   ├── WidgetRoot.ts
+│   │   ├── components/  SuggestionCard · LevelPill · DragHandle · IconButton
+│   │   ├── managers/    AnchorManager · DragManager · StateManager
+│   │   └── styles/      tokens.css · widget.css · animations.css
+│   ├── core/
+│   │   ├── messaging/   MessageBus · messages.ts · guards.ts
+│   │   ├── storage/     StorageManager · schema.ts · migrations.ts
+│   │   └── state/       Store.ts
+│   ├── models/          Suggestion · Position · ChartContext
+│   └── utils/           logger · result · dom · env
+├── popup/               enable · disable · reset position · API status · version
+└── dist/                the unpacked extension
+```
 
-### 4.4 Track B phases
+### 5.4 The capability probe — how we make a fragile integration predictable
 
-| # | Deliverable | Est. |
-|---|---|---|
-| **B0** | Discovery spike per target platform. **Needs a logged-in account.** | 0.5 day each |
-| **B1** | MV3 skeleton: Vite + TS strict, manifest, ISOLATED + MAIN content scripts, Shadow DOM host, message bus, popup (enable/disable/reset/version), ESLint/Prettier. | 2 days |
-| **B2** | Port the Track A widget into the Shadow DOM. Same design tokens, same markup. | 1 day |
-| **B3** | `TradingViewSiteBridge` + capability probe + degradation path. | 2 days |
-| **B4** | Backend connection from the service worker (host permissions bypass CORS for extension-origin fetches), auth token handling, Trade button wired to our wrapper API. | 1.5 days |
-| **B5** | First broker bridge (Kotak Neo or Dhan) after its B0. | 2 days |
+This is the mitigation for building on vendor internals. It runs on **every page load**, before anything depends on the bridge.
 
-**Track B total ≈ 9 days** after Track A, plus 0.5/platform for discovery.
+```
+1. Does each ChartBridge method exist?
+2. Does priceToY(lastBarClose) return a number INSIDE the pane rect?    ← the real test
+3. Does yToPrice(priceToY(p)) round-trip back to p within 1 tick?       ← catches silent breakage
+4. Does timeToX(lastBarTime) land inside the pane width?
+5. Report ProbeResult → content script → popup badge → log
+```
+
+A method that exists but returns garbage is more dangerous than one that's missing. Checks 2 and 3 are what catch that.
+
+**Reliability Requirements — R-P2 (the degradation ladder)**
+
+| Probe result | Behaviour |
+|---|---|
+| All pass | Full anchoring. Widget rides price. |
+| Coordinate methods fail | **Manual mode**: fixed, draggable panel with a visible "chart link unavailable" badge. Suggestion values still shown and still tradeable — they come from our API, not the chart. |
+| Bridge entirely absent | Widget does not mount. Popup says why. Host page untouched. |
+
+The product degrades. **It never lies, never shows a wrong price, and never breaks the host page.** Additional requirements:
+- Every bridge call wrapped — a bridge fault is a logged, contained event, never a throw into the host page.
+- Pin a `knownGoodHostBuild` marker; log mismatches so a vendor deploy is detectable within hours rather than from a bad fill.
+- Probe result surfaced in the popup so you can see the integration's health at a glance.
 
 ---
 
-## 5. The Levels Engine (shared)
+## 6. Phase 1 — detailed phases
 
-Your differentiator versus Zing is **no strategy catalogue** — instead of waiting for a setup to fire, entry rides live price and TP/SL are derived continuously from market structure. Much of this exists (`services/banknifty/levels.py`, `suggestion_engine.py`, `price_action/analyzer.py`, OI-derived S/R). What's needed is a single consolidated endpoint the widget can trust.
+### P0 — Discovery
+TradingView ✅ complete (§4.1). Kotak ⏳ awaiting your probe output (§4.2).
+**Est: 0.5 day** (Kotak analysis once output lands)
 
+### P1 — Extension skeleton
+MV3 manifest (`minimum_chrome_version: 111`), Vite + TypeScript strict, two build configs (content scripts must be **IIFE** — MV3 content scripts don't support ESM; the service worker is `type: module`). Shadow DOM host. Typed message bus. Storage with schema + migrations scaffold. Popup: enable / disable / reset position / API status / version. ESLint flat config + Prettier + `import/no-restricted-paths` enforcing the bridge quarantine.
+
+Manifest essentials:
+```jsonc
+"permissions":      ["storage", "scripting", "activeTab"],
+"host_permissions": ["https://*.tradingview.com/*",
+                     "https://*.kotaksecurities.com/*",
+                     "http://127.0.0.1:8000/*"],       // our FastAPI
+"content_scripts":  [ { world: "ISOLATED", js: ["content.js"] },
+                      { world: "MAIN",     js: ["bridge.js"]  } ]
 ```
-1. Ingest    live LTP + rolling OHLCV (200–500 bars, current TF)
-2. Pivots    fractal swing highs/lows, lookback k (3 scalp / 5 higher TF)
-3. Zones     cluster by proximity (tol = max(0.15%, 0.5×ATR14));
-             score = touch count × recency decay × volume-at-level
-             — fold in the existing OI support_strike/resistance_strike, which are
-               often stronger levels than pure price pivots for index options
-4. Select    TP = nearest strong zone beyond entry in direction
-             SL = just past nearest opposing zone (buffer 0.25×ATR)
-5. Floors    |entry−SL| ≥ slMin×ATR14 ;  |TP−entry| ≥ rrMin×|entry−SL|  (rrMin 1.5)
-6. Snap      round to tick; nudge toward round-number magnets (NIFTY 50/100pt)
-7. Emit      { entry, tp, sl, zoneRefs, confidence, computedAtPrice }
+
+**R-P1**
+- Single-injection guard: a `window` flag **and** a DOM-id check — they fail in different situations (SPA nav vs. service-worker restart vs. multiple tabs).
+- SPA navigation: patch `pushState`/`replaceState`, listen to `popstate`, plus a `MutationObserver` backstop. Both targets are SPAs.
+- Full teardown on disable/navigate: remove host, disconnect every observer, release every listener. **Verified by toggling 20× and watching listener count and heap stay flat.**
+- `all_frames: false` by default; flipped only if the Kotak probe shows an iframe.
+
+**Est: 2 days**
+
+### P2 — ChartBridge + TradingViewSiteBridge + probe
+The interface, the MAIN-world entry, the TradingView adapter over the verified calls in §4.1, the capability probe, the nonced postMessage protocol (namespace + per-session nonce; verify `event.source === window` and `event.origin === location.origin` — a page script can post into the isolated world).
+
+**R-P2** as specified in §5.4, in full. **This ships before anything depends on the bridge, not after.**
+
+**Est: 2 days**
+
+### P3 — Widget UI
+```
+┌──────────────────────────┐
+│  ⠿  TP  24126.2      ×   │   LevelPill variant="tp"
+└──────────────────────────┘
+    ┌──────────────────────┐
+    │ ⚡ Suggested          │
+    │   24120 CE  [ Trade ]│   SuggestionCard
+    └──────────────────────┘
+┌──────────────────────────┐
+│  ⠿  SL  24116.2      ×   │   LevelPill variant="sl"
+└──────────────────────────┘
+```
+Shadow DOM, CSS custom properties, dark theme, blur, rounded, glow on hover, fade+scale mount. Collapsible to a single puck. Draggable via pointer capture. Position and collapse state persisted.
+
+**R-P3**
+- **Three independently-positionable elements**, not one rigid flex column — in P4 they move to their own price levels. This is the one decision that is expensive to retrofit.
+- `transform: translate3d` only. **Never** `top`/`left` — that forces layout inside the host's render loop and will visibly stutter the chart.
+- `pointer-events: none` on the layer, `auto` only on interactive children — never block chart interaction.
+- Tabular-lining numerals so digits don't jitter when values update live.
+- `@media (prefers-reduced-motion: reduce)` → all durations 1ms.
+- Correct at browser zoom 80/100/150% and dpr 1/2/3.
+- Keyboard: Trade is a real `<button>`; arrow-key drag alternative on the handle.
+
+**Est: 2 days**
+
+### P4 — Anchoring
+One `requestAnimationFrame` loop for the whole widget, driven by `bridge.onChange` plus a per-frame sync.
+
+```ts
+const y = bridge.priceToY(level.price);
+const x = level.pinRight ? paneRect.right - GUTTER : bridge.timeToX(level.time);
+if (y == null || x == null) { hide(el); return; }        // off-screen → hide, never guess
+if (Math.abs(y - last.y) < 0.5 && Math.abs(x - last.x) < 0.5) return;   // sub-pixel → skip
+el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
 ```
 
-**Reliability Requirements — R-L1 — the make-or-break constraint**
+**R-P4a**
+- `null` ⇒ **hide the element**. Never extrapolate, never reuse a stale coordinate. A widget showing a wrong price is worse than one showing nothing.
+- Sub-pixel skip so a still chart does zero DOM writes. Idle CPU ≈ 0%.
+- Guard every frame against a torn-down chart.
+- One rAF loop. A second one is a defect.
+- **Budget: < 0.3 ms/frame**, verified in the Performance panel, not by feel.
 
-With no strategy gate, levels recompute constantly. Done naively, the widget **jitters** and looks broken. Non-negotiable:
+**Est: 1.5 days**
 
-- **Hysteresis.** An emitted level is *sticky*: it moves only if the new value differs by `> max(2 ticks, 0.3×ATR)`, or price has traded through it.
-- **Split cadences.** Entry marker = rAF-smooth (feels alive). TP/SL = recomputed at most every 500ms–1s and animated over 300ms, so a change reads as a *decision*, not noise.
-- **Lock on interaction.** Hovering the Trade button or dragging a pill freezes auto-adjustment for that suggestion. (Also stated in R-A3 — it matters that much.)
-- **Invalidation is explicit.** If price runs through the proposed SL before entry, mark the card `stale`; never silently re-derive under the user.
-- **Determinism.** Same bars in → same levels out. No wall-clock, no `Math.random()`, no dependence on poll timing. Unit-testable against fixtures, and it must be tested that way.
-- **Always emit a reason.** Every level carries which zone produced it, surfaced on hover. A number you can't explain is a number you won't trust at 9:20am.
+### P5 — Data
+Service worker polls `GET /chart/state` and `GET /recommend`, merges, validates, pushes to the content script.
+
+**R-P5**
+- **Single in-flight request per endpoint** — `AbortController` cancels the previous. A slow response must never overwrite a newer one.
+- **Staleness is visible.** `is_fresh === false`, or last success > 15s ago ⇒ widget dims, shows `stale`, **Trade disabled**.
+- **Backoff:** 5s → 10s → 20s → 30s cap, reset on first success. Never hammer a dead API for an hour.
+- **Type-guard every payload at the boundary** — a guard, not a cast. `sl`/`tp`/`ltp` are `Optional[float]` server-side and *will* be `null`. `NaN` must never reach `priceToY`.
+- **Never render a partial suggestion.** Missing `tp` ⇒ hide the TP pill, keep the rest. Missing entry ⇒ hide the widget. Explicit per-field decisions. **No `?? 0`, ever.**
+- Poll only when the tab is visible and the market is open (`services/price_action/market_hours.py` already knows).
+- **Symbol mapping** per surface: the chart's symbol string (`NIFTY`, `NSE:NIFTY`, Kotak's own token) → our instrument. Explicit map, and an **unmapped symbol hides the widget rather than guessing**.
+
+**Est: 1.5 days**
+
+### P6 — The Trade button
+```
+POST /v1/paper/manual/order
+{ direction, lots, order_type:'MARKET', strike, option_type, sl, tp,
+  strategy:'chart-widget', clientOrderId:<uuid> }
+```
+Per §3: this places the **entry only**. `sl`/`tp` are recorded as *our* managed levels and enforced by `trade_management`.
+
+**R-P6 — highest-stakes code in the project**
+- **Idempotency key** (`clientOrderId`) on every submit. A double-click, a retry, or a flaky network must not place two orders. **If the backend doesn't dedupe today, that is a required backend change before P6 — not optional.**
+- **Disable-on-submit, always.** `pending` on click, re-enabled only on a terminal response.
+- **Never auto-retry a POST.** Ambiguous timeout ⇒ `Unknown — check positions` with a link. An auto-retry on an order endpoint can double a position; that is the worst failure mode this system has.
+- **Confirm step** showing strike, side, lots, entry, SL, TP, and risk in ₹ before anything is sent.
+- **Freeze the suggestion on hover/focus of Trade.** Levels must not shift between the decision and the click. Correctness, not polish.
+- **Slippage guard:** stamp the suggestion with the price it was computed at; if live price has moved beyond tolerance, block and re-prompt.
+- **Paper is the default.** Live requires an explicit, visually distinct toggle.
+- Failure ⇒ inline error with the server's message; widget stays usable. **No silent `.catch(() => {})`** (§7.2).
+- Plus **R-OCO** (§3) in full — especially the unmissable warning when the backend is unreachable while a position is open.
+
+**Est: 2 days**
+
+### P7 — Kotak Neo adapter
+`KotakNeoBridge` over the probe's findings. If iframed: `all_frames: true` + frame-targeted injection + cross-frame messaging. Kotak symbol mapping. Re-run the full P4/P5/P6 test matrix on Kotak.
+
+**R-P7:** identical probe + degradation contract as TradingView. Kotak-specific: if their chart is Advanced Charts with a documented API, prefer the public methods over internals wherever both exist — public API is far more stable.
+
+**Est: 2 days** *(placeholder — firm only after the probe output)*
+
+### P8 — Hardening
+Full §7 checklist, §9 test matrix, and a **full trading-session soak, 9:15–15:30, DevTools open, zero errors, flat memory.** That soak is the real acceptance gate.
+
+**Est: 1.5 days**
+
+**Phase 1 total ≈ 12–14 days** (P7 firm only after the probe).
 
 ---
 
-## 6. Keeping the two tracks unified
-
-Do these three things during Track A and Track B costs ~30% less:
-
-1. **`ChartBridge` from day one.** Even in Track A where it's a 20-line wrapper over `series.priceToCoordinate`. The widget must never call lightweight-charts directly.
-2. **Presentational components take props only.** `SuggestionCard` and `LevelPill` receive `{x, y, values, handlers}` and nothing else — no hooks, no fetching, no chart references. Then they drop into a Shadow DOM unchanged.
-3. **Design tokens in one CSS file**, referenced by variable everywhere. Track B copies one file.
-
-```
-        ┌──────────────── shared ────────────────┐
-        │  SuggestionCard   LevelPill   tokens.css │
-        │  Suggestion types   levels contract      │
-        └───────┬────────────────────────┬─────────┘
-                │                        │
-     LightweightChartsBridge      TradingViewSiteBridge / BrokerAdvancedChartsBridge
-        (Track A, in-app)              (Track B, extension)
-                │                        │
-                └────────► FastAPI ◄─────┘
-                     /chart/state, /recommend, /manual/order
-                              │
-                          BrokerPort → Kotak Neo / Upstox
-```
-
----
-
-## 7. Reliability engineering standard (applies to every phase)
-
-You asked for reliability everywhere. This is the definition. Nothing merges without it.
+## 7. Reliability standard (applies to every phase)
 
 ### 7.1 Never display a number we can't vouch for
-The failure mode that costs real money is a widget confidently showing a **stale or wrong price**. Ranked behaviour: **correct > visibly absent > visibly stale > silently wrong.** Every code path picks one of the first three.
-- `priceToCoordinate` → `null` ⇒ hide. Never extrapolate.
-- Data older than 15s or `is_fresh === false` ⇒ dim + `stale` badge + **Trade disabled**.
-- `NaN`/`undefined`/`null` in any price field ⇒ that element does not render. No `?? 0`, ever.
+Ranked behaviour: **correct > visibly absent > visibly stale > silently wrong.** Every path picks one of the first three.
+- `priceToY` → `null` ⇒ hide. Never extrapolate.
+- Data > 15s old or `is_fresh === false` ⇒ dim + `stale` + Trade disabled.
+- `NaN`/`null`/`undefined` in any price ⇒ that element does not render. No `?? 0`.
 
 ### 7.2 No silent failures
-`.catch(() => {})` is banned in this feature. Every failure does at least one of: surface in the UI, log with context, or trip the degradation path. (`TradeRecommendationLine.tsx:14` currently swallows errors — do not copy it, and fix it while we're there.)
+`.catch(() => {})` is banned. Every failure surfaces in the UI, logs with context, or trips the degradation path.
 
-### 7.3 Order-path safety (the one place a bug is expensive)
-Idempotency key · disable-on-submit · **no auto-retry on POST** · confirm dialog with risk in ₹ · slippage guard · ambiguous-timeout → "check positions", never a retry.
+### 7.3 Order-path safety
+Idempotency key · disable-on-submit · **no auto-retry on POST** · confirm dialog with ₹ risk · slippage guard · ambiguous timeout ⇒ "check positions", never a retry.
 
-### 7.4 Lifecycle correctness
-Every `useEffect` returns a cleanup. Every listener/observer/rAF/interval is released. Must survive: React StrictMode double-mount, hot reload, symbol switch, timeframe switch, tab background/foreground, chart teardown mid-frame. **Test: switch symbols 50× and confirm listener count and heap are flat.**
+### 7.4 Never break the host page
+No host CSS modified. No host globals patched except our own SPA-nav hook, which must be restorable. Every bridge call wrapped. **Disabling the extension must leave the page exactly as found.**
 
-### 7.5 Performance budget
-Widget layer < 0.3 ms/frame. Zero DOM writes when the chart is still. No second rAF loop. Verified in the Performance panel, not by feel.
+### 7.5 Lifecycle correctness
+Every listener/observer/rAF/interval released. Survives: SPA nav, symbol switch, timeframe switch, tab background/foreground, service-worker restart, extension reload with charts open, multiple tabs. **Test: switch symbols 50× — listener count and heap flat.**
 
-### 7.6 Degradation ladder — explicit, tested, per failure
+### 7.6 Performance budget
+Widget layer < 0.3 ms/frame. Zero DOM writes when the chart is still. One rAF loop. Measured in the Performance panel.
+
+### 7.7 Degradation ladder
 | Failure | Behaviour |
 |---|---|
-| API unreachable | Last-known values dimmed + `stale`, Trade disabled, backoff retry, reconnect banner |
-| API returns partial data | Render only the fields present; hide the rest individually |
-| Chart not ready / torn down | Layer renders nothing, no throw, retries next frame |
-| Price outside visible range | Element hidden; reappears on scroll-back |
-| Market closed | Widget shows `Market closed`, Trade disabled |
-| (Track B) bridge probe fails | Manual-mode fixed panel + badge; host page unaffected |
-| Order rejected | Inline error with the server message; widget stays usable |
-
-### 7.7 Test discipline
-- Unit: levels engine against fixture bar sets (deterministic, §5 R-L1).
-- Unit: every payload type guard, including `null`/`NaN`/missing-field cases.
-- Integration: mock API — down, slow (5s), partial, malformed.
-- Manual matrix: §9.
-- **Soak: one full trading session, 9:15–15:30, with the DevTools console open. Zero errors, flat memory. This is the real acceptance gate for Track A.**
+| Our API unreachable | Dimmed last-known + `stale`, Trade disabled, backoff, reconnect banner. **If a position is open: red unprotected warning (R-OCO).** |
+| API partial data | Render present fields only; hide the rest individually |
+| Bridge probe fails | Manual mode: fixed draggable panel + badge. Values still shown, still tradeable. |
+| Chart not ready / torn down | Nothing renders, no throw, retry next frame |
+| Price off-screen | Element hidden; returns on scroll-back |
+| Symbol unmapped | Widget hidden with a reason in the popup |
+| Market closed | `Market closed`, Trade disabled |
+| Order rejected | Inline server message; widget stays usable |
 
 ### 7.8 Observability
-A `[TradeWidget]` namespaced logger, on in dev and behind a flag in prod. Log: every state transition, every degradation trip, every order submit/response with its idempotency key, bridge probe results. When something goes wrong at 9:20am you need the log, not a repro.
+`[TradePilot]` namespaced logger. Logs every state transition, degradation trip, probe result, and order submit/response with its idempotency key. When something goes wrong at 9:20am you need the log, not a repro.
 
 ---
 
@@ -440,72 +429,60 @@ A `[TradeWidget]` namespaced logger, on in dev and behind a flag in prod. Log: e
 
 | # | Risk | Sev | Mitigation |
 |---|---|---|---|
-| 8.1 | **Widget jitter/flicker** from continuous recompute — the most likely thing to make this feel broken | **HIGH** | §5 R-L1: hysteresis, split cadences, interaction lock, animated transitions |
-| 8.2 | **Stale price shown as live** → a trade on a bad number | **HIGH** | §7.1 ranked behaviour; `is_fresh`; staleness timer; Trade disabled when unsure |
-| 8.3 | **Duplicate order** from double-click/retry | **HIGH** | R-A3: idempotency key, disable-on-submit, no auto-retry. Backend dedupe required. |
-| 8.4 | Frame-rate damage to the chart | MED | R-A1: transform-only, sub-pixel skip, shared rAF loop, measured budget |
-| 8.5 | **(Track B)** TradingView internals renamed by a deploy | **HIGH for B, N/A for A** | R-B1: probe + degradation + build marker. **This risk is the entire argument for doing Track A first.** |
-| 8.6 | Regulatory / broker-policy | *Descoped by user* | Recorded for completeness: SEBI's retail-algo framework (Algo-ID from April 2026) and vendor ToS apply to public products. Personal use, own wrapper API, human clicks every order. Revisit only if this is ever distributed. |
-| 8.7 | Delta-based premium↔spot projection drifts | MED | Already handled in `premiumToSpot`; keep returning `null` when greeks are absent (existing comment says a premium-only readout beats a made-up level — correct, keep it) |
-| 8.8 | Widget overlaps chart UI / other overlays | LOW | z-index token, `pointer-events: none` on the layer and `auto` only on interactive children, collision nudge |
+| 8.1 | **Vendor renames internals in a deploy** — inherent to extension-first | **HIGH** | §5.4 probe + degradation + build marker. Bridge quarantined to one folder so the fix is one file. **Accepted risk of the chosen approach.** |
+| 8.2 | **Stale price shown as live** → trade on a bad number | **HIGH** | §7.1; `is_fresh`; staleness timer; Trade disabled when unsure |
+| 8.3 | **Duplicate order** from double-click/retry | **HIGH** | R-P6: idempotency key, disable-on-submit, no auto-retry. Backend dedupe required. |
+| 8.4 | **Position left unprotected** — backend down while open, TP/SL unenforced | **HIGH** | R-OCO: exit monitoring server-side only; unmissable warning; never client-side stops |
+| 8.5 | Widget jitter from continuously recomputed levels | MED | Hysteresis (move only if Δ > `max(2 ticks, 0.3×ATR)`); levels update ≤1/s and animate over 300ms while the entry marker rides at frame rate; freeze on interaction |
+| 8.6 | Regulatory / vendor policy | *Descoped* | Personal use, own wrapper API, human clicks every order. Revisit only if ever distributed. |
+| 8.7 | Kotak chart unreachable (iframe / no global) | MED | Probe answers it; worst case = manual mode, which is still a usable product |
+| 8.8 | Chart feed ≠ our feed → widget sits a tick off the candle | LOW | Display-align to the chart's last price; trade off our feed. Decide in P5. |
+| 8.9 | Frame-rate damage to the host chart | MED | R-P4a: transform-only, sub-pixel skip, single loop, measured budget |
 
 ---
 
-## 9. Manual test matrix (Track A)
+## 9. Test matrix
 
 | Scenario | Expected |
 |---|---|
-| Pan / zoom / Y-scale drag | Widget tracks price exactly, no lag, no jitter |
-| Price scrolls out of view | Element hides cleanly; returns on scroll-back |
-| Symbol switch (NIFTY ↔ BANKNIFTY) | Clean re-anchor, no ghost elements, no stale numbers |
+| Pan / zoom / Y-scale drag | Tracks price exactly, no lag, no jitter |
+| Price scrolls off-screen | Hides cleanly; returns on scroll-back |
+| Symbol switch | Clean re-anchor, no ghosts, no stale numbers |
 | Timeframe switch | Same |
-| API stopped mid-session | `stale` + dim + Trade disabled + backoff; recovers on restart |
+| SPA navigation away and back | Correct unmount/remount |
+| Extension reload with charts open | No orphan hosts, no double widgets |
+| 3 chart tabs open | 3 independent widgets, no cross-talk |
+| Our API stopped mid-session | `stale` + Trade disabled + backoff; recovers on restart |
+| API stopped **with a position open** | Red unprotected warning |
 | API slow (5s artificial delay) | No flicker, no out-of-order overwrite |
 | `sl`/`tp` return `null` | Those pills hide; card still works |
-| Double-click Trade | **Exactly one order** |
-| Trade with a rejecting backend | Inline error; widget still usable |
-| Drag TP into an invalid position | Rejected with a visible reason; reverts |
-| Poll lands mid-drag | Dragged line does not jump |
+| **Double-click Trade** | **Exactly one order** |
+| Trade against a rejecting backend | Inline error; widget usable |
+| Bridge probe forced to fail | Manual mode + badge; host page unaffected |
+| Browser zoom 80/100/150%, dpr 1/2 | Correct positioning at all |
 | Market closed | `Market closed`, Trade disabled |
-| Browser zoom 80 / 100 / 150% | Correct positioning at all |
-| Window resize, panel collapse | Re-anchors correctly |
-| Tab backgrounded 10 min | Polling paused; correct on return |
 | Switch symbol 50× | Flat listeners, flat heap |
-| Full session soak | Zero console errors, flat memory |
+| Disable extension | Page exactly as found |
+| **Full session soak 9:15–15:30** | **Zero console errors, flat memory** |
 
 ---
 
-## 10. Estimates
+## 10. Open questions
 
-| | Est. |
-|---|---|
-| **Track A (in-app, primary)** — A1…A6 | **≈ 5.5 days** |
-| Levels Engine consolidation endpoint (if the existing services need a unified `/levels`) | 2–4 days |
-| Track B0 discovery spike (per platform, needs login) | 0.5 day each |
-| **Track B (extension)** — B1…B5 | **≈ 9 days** |
-
-**First working widget on your own chart: ~4 days** (A1–A4).
-
----
-
-## 11. Open questions
-
-1. **Confirm Track A first.** Building on `quantboard-pandapath` rather than starting with the extension — this is my strong recommendation and it changes the whole sequence.
-2. **Which chart page is the target?** `LiveOIChart.tsx` (the full one, on `/live-oi`) or `TradingChart.tsx`? I'd start with `LiveOIChart` since the anchor loop and drag logic already live there.
-3. **Does `/v1/paper/recommend` already give a *continuous* suggestion, or only when `trade_recommended === true`?** Your "no strategy" model needs levels available **at all times**, not just when a setup fires. If it's gated, we need either a flag or a new always-on `/levels` endpoint — this may be the largest backend item, and it's the one I'd want to check next.
-4. **Real or paper by default?** The Trade button can hit `/v1/paper/manual/order` (paper) or `/v1/execution/execute` (live). I recommend paper as the default with an explicit, visually distinct live toggle.
-5. **Does `POST /manual/order` dedupe by client key today?** If not, that's a required backend change before A4 (R-A3).
-6. **Track B priority order** once A ships: tradingview.com, Kotak Neo, or Dhan? And can you get me a logged-in session for the B0 spike?
-7. **Multi-position display.** With several open positions plus a live suggestion, do we show every widget, or only the suggestion plus the selected position? Affects the collision-handling design.
+1. **The Kotak probe output** (§4.2) — the one thing blocking P7. Everything else proceeds without it.
+2. **Does `/v1/paper/recommend` produce a suggestion continuously, or only when `trade_recommended === true`?** Your no-strategy model needs levels available **at all times**, not just when a setup fires. If it's gated, we need a flag or an always-on `/levels` endpoint. **Most likely backend work item — I'd check this next.**
+3. **Does `POST /manual/order` dedupe by client key today?** If not, that's a required backend change before P6 (R-P6).
+4. **Where does the API run?** `http://127.0.0.1:8000` assumes same machine as the browser. If not, we need a host/tunnel and the `host_permissions` change.
+5. **Paper or live by default?** I recommend paper, with an explicit visually-distinct live toggle.
+6. **Multi-position display** — with several open positions plus a live suggestion, show all widgets or only the suggestion plus the selected position? Affects collision handling in P3.
+7. **TradingView symbol coverage** — which symbols do we map? NIFTY/BANKNIFTY only, or wider?
 
 ---
 
-## 12. Recommendation
+## 11. What happens first
 
-**Start with Track A, phase A1.**
+1. **P1 starts immediately** — the skeleton needs nothing from anyone.
+2. **You run the Kotak probe** (§4.2) whenever convenient; P7 unblocks when it lands.
+3. **Check Q2 and Q3** in the backend — both may need work, and both gate later phases.
 
-You already own a working chart, a working levels/suggestion backend, a working order wrapper, and — critically — working `priceToCoordinate` anchoring and drag-to-adjust code. The Zing-style widget is a **presentation layer over things that already run**. That is why it's ~4 days to something real, and it's why it can be made genuinely reliable: every moving part is code we control and a library we pin.
-
-The extension is worth building, and §4 has the verified research to build it — I confirmed the TradingView internals work end to end. But it will always carry a failure mode Track A doesn't: an undocumented API that a vendor can rename without telling us. Since you've said reliability is the priority, that ordering follows directly.
-
-Three things to settle before A1 starts: confirm the target chart page (Q2), check whether `/recommend` can produce continuous always-on levels (Q3 — most likely to need backend work), and decide paper-vs-live default (Q4).
+The one thing worth restating: building on vendor internals means a deploy can break the integration. That risk is accepted and the plan handles it the only way it can be handled — a probe that detects breakage immediately and a degradation path that keeps the widget honest and usable when it happens. The bridge is one folder, so recovery is one file.
