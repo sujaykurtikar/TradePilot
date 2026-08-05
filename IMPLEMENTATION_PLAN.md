@@ -17,7 +17,12 @@
 ## 1. The plan in one page
 
 ```
-Phase 1  ── CHROME EXTENSION ────────────────────────────────────────────
+Phase 0  ── DAY-1 DEMO (ships first, see §6.0) ──────────────────────────
+  D1  Mock overlay   real chart, hardcoded TP/Suggested/SL, draggable,
+                      Trade = local confirm only, no backend calls
+                                                          ≈ 1 day
+
+Phase 1  ── CHROME EXTENSION, hardened ──────────────────────────────────
   P0  Discovery      TradingView ✅ verified  ·  Kotak ✅ verified (§4.2 — good news, same API family)
   P1  Skeleton       MV3 + Vite + TS strict, Shadow DOM, messaging, popup
   P2  ChartBridge    interface + shared TradingViewInternalApiBridge (verified working)
@@ -25,14 +30,19 @@ Phase 1  ── CHROME EXTENSION ───────────────�
   P4  Anchoring      widget tracks live price + levels through the bridge
   P5  Data           service worker → our FastAPI → suggestion + levels
   P6  Trade          entry order via our wrapper; TP/SL enforced by our engine
+  P6t Trail SL/TP    post-trade pills anchor to their own price, draggable,
+                      wired to POST /position/risk — see §6.6t
   P7  Kotak config   frame-injection + symbol map on the SAME bridge class
   P8  Hardening      §7 checklist + full-session soak
-                                                          ≈ 11–13 days
+                                                          ≈ 12–14 days total
+                                                          (D1 folds into P1–P4)
 
 Phase 2  ── IN-APP OVERLAY (deferred) ───────────────────────────────────
   Port the same widget into quantboard-pandapath's LiveOI chart.
-  ~3 days, because P3/P4/P5/P6 are already built and reusable.
+  ~3 days, because P3/P4/P5/P6/P6t are already built and reusable.
 ```
+
+**Answering your question directly: yes, this is what the plan already builds toward** — Chrome extension only, `quantboard-pandapath` deferred to Phase 2; overlay matching the screenshot; click Trade to call our API; drag-to-trail SL/TP after a trade, with the API call wired in later. **Two things were underspecified until this revision**, both fixed below: there was no explicit "working demo tomorrow" checkpoint (§6.0 adds one, using the bridge math already verified in §4.1/§4.2 — no new discovery risk), and post-trade SL/TP dragging was only implied by an endpoint sitting in a table rather than a first-class phase (§6.6t makes it one, and states plainly which part is stubbed today vs. wired to the API later).
 
 **Key sequencing decision, updated:** both discovery targets are now verified (§4.1, §4.2), and **the Kotak probe turned up something better than expected — Kotak's chart is the same internal API family as tradingview.com, not a separate documented one.** That means P2 and P7 are no longer two separate adapters; they're one bridge implementation with per-host configuration (§5.1). P1 starts immediately either way; P7's remaining work is narrower than originally scoped — the frame-injection mechanics (§4.2) rather than a whole second API surface.
 
@@ -301,6 +311,25 @@ The product degrades. **It never lies, never shows a wrong price, and never brea
 
 ## 6. Phase 1 — detailed phases
 
+### 6.0 — Day-1 demo (build this first)
+
+**Goal:** something real, on your actual chart, tomorrow. Not a mockup in isolation — the exact widget from the screenshot, correctly positioned on a live TradingView or Kotak chart, using the real pixel math already verified in §4.1/§4.2. What's fake is the *data and the order*, not the *positioning*.
+
+**In scope:**
+- MV3 skeleton (a slice of P1): manifest, one content script pair (TradingView only — Kotak's frame-injection wiring is P7, skip it for the demo), Shadow DOM host.
+- The bridge (a slice of P2): `priceToY`/`timeToX` over the **already-verified** `TradingViewApi` calls. No probe, no degradation ladder yet — those are P2/P8 hardening, not needed to prove positioning works.
+- The widget UI (P3 in full): TP pill, Suggested card, SL pill, styled to match the screenshot.
+- Anchoring (a slice of P4): the rAF loop, `transform: translate3d`, hide-on-null. This is the part that makes it feel real rather than a static screenshot — it must track price as candles move.
+- **Hardcoded suggestion**: `{ entry: <current spot ± offset>, tp, sl, strike: '<ATM> CE' }` — no `/recommend` call, just numbers in a config object.
+- **Drag works and pills stay where dropped** — local component state only, nothing persisted to `chrome.storage` or a backend yet.
+- **Trade button**: on click, shows a confirm toast/log (`"Would place: BUY 24120 CE, entry 24120, SL 24116, TP 24126"`) and does **nothing else**. No network call. This is the placeholder P6 will replace.
+
+**Explicitly out of scope for Day 1:** the capability probe, the degradation ladder, real suggestion data, real order placement, Kotak (needs the iframe wiring from P7), persistence, staleness handling. None of §7's reliability standard applies yet — **this build is a demo, not a candidate for real trading, and must be labeled as such in the UI itself (a small "DEMO" badge) so it's never mistaken for the hardened version once P1–P8 land.**
+
+**Why this is honestly buildable in a day and not a rushed guess:** every piece of chart math it depends on has already been executed against a live chart and returned real numbers (§4.1 on tradingview.com, §4.2 on Kotak). This isn't "try it and see" — it's assembling pieces already proven to work.
+
+**What happens after Day 1:** P1–P8 below don't throw this away — they harden it in place. P2 adds the probe around the same bridge calls. P5 replaces the hardcoded suggestion object with the real `/chart/state` + `/recommend` calls. P6 replaces the toast with the real `POST /manual/order` call, confirm dialog, and idempotency key. P6t (below) adds the trail-and-persist behavior. Same widget, same anchoring code, progressively real underneath.
+
 ### P0 — Discovery
 TradingView ✅ complete (§4.1). Kotak ✅ complete (§4.2) — same internal API family, confirmed working, frame nesting mapped, `sandbox` attributes checked and confirmed non-blocking. **Fully done, no open items.**
 **Est: complete**
@@ -358,6 +387,8 @@ The interface, the MAIN-world entry, and the **shared** adapter over the verifie
 └──────────────────────────┘
 ```
 Shadow DOM, CSS custom properties, dark theme, blur, rounded, glow on hover, fade+scale mount. Collapsible to a single puck. Draggable via pointer capture. Position and collapse state persisted.
+
+*Note: this phase covers dragging the widget's own screen position (moving the whole card around) — not dragging a pill to a new **price**. Post-trade price-dragging (trailing SL/TP on an open position) is its own explicit phase, P6t below. Pre-trade manual override — dragging a *suggested* TP/SL before you've clicked Trade — isn't separately scoped yet; if you want that too, it reuses the exact same drag mechanics as P6t and is a small add-on, not a new mechanism.*
 
 **R-P3**
 - **Three independently-positionable elements**, not one rigid flex column — in P4 they move to their own price levels. This is the one decision that is expensive to retrofit.
@@ -425,6 +456,27 @@ Per §3: this places the **entry only**. `sl`/`tp` are recorded as *our* managed
 
 **Est: 2 days**
 
+### P6t — Trail SL/TP after a trade (your described future flow, made explicit)
+
+This is the phase that directly answers your description: *"after taking the trade, SL/TP should stay wherever placed, and we should be able to trail them — later wired to an API call when dragged."* It was previously only implied by `POST /position/risk` sitting in the §2 endpoint table; it now has its own scope, sequencing, and reliability bar.
+
+**Behavior change once a position exists:**
+- **Before entry** (P4's anchoring): the SuggestionCard and its TP/SL pills all track the *proposed* entry price — they move together as a suggestion, per §5 R-L1's hysteresis rules.
+- **After Trade is clicked and a position is confirmed**: the TP and SL pills switch from "following the suggestion" to **independently anchored at the position's actual `sl`/`tp` prices** (from `GET /chart/state`'s `positions[]`, per §2). They no longer move with the suggestion engine — they sit at fixed prices on the chart, exactly like the reference screenshot's price lines, and ride the chart's pan/zoom/scroll via the same `priceToY` anchoring as everything else.
+- **Dragging a pill after entry**: same pointer-capture drag as the pre-trade widget (§P3), but the release action differs —
+  - **Stubbed (works from Day 1, §6.0):** optimistic local update only — the pill visually moves to the dropped price, no network call, console-logs `"would call POST /position/risk"`.
+  - **Wired (this phase, P6t):** on release, call `POST /v1/paper/position/risk { position_id, account, sl, tp }` — snapped to tick size, validated to stay on the correct side of entry before the call is even made.
+- **A poll landing mid-drag must not yank the pill** — `quantboard-pandapath`'s `LiveOIChart.tsx:689` already solves exactly this (skip the update for whichever line is mid-drag); replicate the same guard here.
+- **Reconciliation, not blind optimism:** if the server rejects the new level (e.g. invalid tick, wrong side of entry, position already closed), snap the pill back to the last server-confirmed value and show why. Never leave the UI showing a level the backend didn't actually accept — that's a live position with a stop the widget is lying about.
+- **Trailing (an explicit statement, since you used the word):** true trailing (SL follows price automatically as it moves favorably, without the user dragging) is a *further* increment on top of this — it's `services/trade_management/manager.py`'s job server-side, not something the extension computes. The extension's role stays "render the engine's current SL/TP, allow a manual override drag." If you want extension-side visual trailing distinct from the backend's own trailing logic, that's a scope decision worth its own conversation once P6t is working — flagging it rather than assuming.
+
+**R-P6t**
+- Same as R-P6's idempotency/no-auto-retry rules, applied to `/position/risk` instead of `/manual/order`.
+- The pill's authoritative price is **always the server's last-confirmed value** — a locally-dragged-but-unconfirmed position is visually distinguishable (e.g. a subtle pending state) from a confirmed one.
+- If the backend is unreachable while a position is open, dragging is disabled entirely (can't safely change a stop you can't confirm) and R-OCO's unprotected-position warning takes priority over drag affordance.
+
+**Est: 1 day** (reuses P3's drag mechanics and P6's request-safety patterns; the new work is the anchor-switch logic and the reconciliation state machine)
+
 ### P7 — Kotak Neo frame wiring
 Per §4.2, this is narrower than originally scoped: the API itself is already covered by P2's shared bridge, and the `sandbox` question that could have complicated injection is confirmed clear. What's left is purely the injection mechanics —
 - Wire the `blob:` match pattern + `match_origin_as_fallback` content-script entries (§manifest above) and confirm the content script actually lands inside the innermost blob iframe, not the middle static-HTML iframe.
@@ -441,7 +493,7 @@ Full §7 checklist, §9 test matrix, and a **full trading-session soak, 9:15–1
 
 **Est: 1.5 days**
 
-**Phase 1 total ≈ 11–13 days.** Both discovery phases and the `sandbox` check are now complete — this estimate is firm, no open discovery items remain.
+**Phase 1 total ≈ 12–14 days** (P0–P8 including the new P6t; the Day-1 demo in §6.0 is ~1 day and folds into P1–P4 rather than adding to the total — it's the same code, built and shown early, then hardened in place). Both discovery phases and the `sandbox` check are complete — the estimate is firm, no open discovery items remain.
 
 ---
 
@@ -518,6 +570,11 @@ Widget layer < 0.3 ms/frame. Zero DOM writes when the chart is still. One rAF lo
 | `sl`/`tp` return `null` | Those pills hide; card still works |
 | **Double-click Trade** | **Exactly one order** |
 | Trade against a rejecting backend | Inline error; widget usable |
+| Drag SL pill after entry, release | Snaps to tick, calls `/position/risk`, pill shows confirmed price |
+| Drag SL/TP to the wrong side of entry | Rejected client-side before any call is made |
+| Poll lands mid-drag on an open position's pill | Dragged pill does not jump |
+| Backend rejects a dragged level | Pill snaps back to last confirmed value, reason shown |
+| Backend unreachable while dragging | Drag disabled; R-OCO unprotected warning takes priority |
 | Bridge probe forced to fail | Manual mode + badge; host page unaffected |
 | Browser zoom 80/100/150%, dpr 1/2 | Correct positioning at all |
 | Market closed | `Market closed`, Trade disabled |
