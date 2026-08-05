@@ -10,29 +10,31 @@
 
 **Noted once, not treated as a blocker:** I recommended building on our own chart first because vendor internals can break without warning (§8.1). That recommendation was considered and overruled — extension first. The plan below therefore invests heavily in the **capability probe + degradation ladder** (§5.4, R-P2), which is how we make an inherently fragile integration behave predictably. SEBI/vendor-policy constraints are descoped per your decision (personal use, own wrapper API) — recorded once in §8.6.
 
+**Update since the previous revision:** both TradingView.com and Kotak Neo are now verified working (§4.1, §4.2). The Kotak probe — run live via Claude in Chrome on your logged-in session — turned up a correction to something I'd told you: Kotak doesn't use a separately-documented "Advanced Charts" API as I assumed; it embeds TradingView's own internal site widget (three-level iframe nesting, innermost frame is a `blob:` URL). That's good news for engineering effort — one bridge class covers both hosts — though it means Kotak carries the same undocumented-internals risk as tradingview.com, not less, as I'd originally claimed.
+
 ---
 
 ## 1. The plan in one page
 
 ```
 Phase 1  ── CHROME EXTENSION ────────────────────────────────────────────
-  P0  Discovery      TradingView ✅ already verified  ·  Kotak ⏳ needs probe
+  P0  Discovery      TradingView ✅ verified  ·  Kotak ✅ verified (§4.2 — good news, same API family)
   P1  Skeleton       MV3 + Vite + TS strict, Shadow DOM, messaging, popup
-  P2  ChartBridge    interface + TradingViewSiteBridge (verified working)
+  P2  ChartBridge    interface + shared TradingViewInternalApiBridge (verified working)
   P3  Widget UI      TP pill / Suggested card / SL pill — matches the design
   P4  Anchoring      widget tracks live price + levels through the bridge
   P5  Data           service worker → our FastAPI → suggestion + levels
   P6  Trade          entry order via our wrapper; TP/SL enforced by our engine
-  P7  Kotak adapter  KotakNeoBridge (unblocks when the probe lands)
+  P7  Kotak config   frame-injection + symbol map on the SAME bridge class
   P8  Hardening      §7 checklist + full-session soak
-                                                          ≈ 12–14 days
+                                                          ≈ 11–13 days
 
 Phase 2  ── IN-APP OVERLAY (deferred) ───────────────────────────────────
   Port the same widget into quantboard-pandapath's LiveOI chart.
   ~3 days, because P3/P4/P5/P6 are already built and reusable.
 ```
 
-**Key sequencing decision:** build against **TradingView first**, even though Kotak is the priority target. Reason — I have already verified TradingView's chart API works end to end (§4.1), and it needs **no login**, so P1–P6 can start today and run at full speed. The Kotak adapter (P7) is a self-contained ~2-day slot that drops in the moment the probe output arrives. **Nothing is blocked waiting on Kotak.**
+**Key sequencing decision, updated:** both discovery targets are now verified (§4.1, §4.2), and **the Kotak probe turned up something better than expected — Kotak's chart is the same internal API family as tradingview.com, not a separate documented one.** That means P2 and P7 are no longer two separate adapters; they're one bridge implementation with per-host configuration (§5.1). P1 starts immediately either way; P7's remaining work is narrower than originally scoped — the frame-injection mechanics (§4.2) rather than a whole second API surface.
 
 ---
 
@@ -116,28 +118,52 @@ Formula: `viewportX = paneRect.x + indexToCoordinate(i)`, `viewportY = paneRect.
 
 ⚠️ Every one of those names is **undocumented and minified** (the widget class came back as `Hp`). TradingView can rename any of it in any deploy. This is why P2 ships a probe and a degradation path *before* anything depends on it.
 
-### 4.2 Kotak Neo — BLOCKED, needs your 60-second probe
+### 4.2 Kotak Neo — CONFIRMED WORKING (correction to my earlier assumption)
 
-Kotak Neo's web platform uses **TradingView Advanced Charts** — the licensed library, fed by Kotak's own datafeed. That is *better* than tradingview.com: Advanced Charts has a **documented public API**, and the widget is conventionally exposed as `window.tvWidget`.
+**Probed live, via Claude in Chrome, on the Kotak Neo "Trade from Charts" page, read-only (no order controls touched).** Full output below. This corrects something I told you earlier: I had assumed Kotak licenses TradingView's separate **Advanced Charts** product, with its own documented public API. **That's wrong.** The probe shows Kotak has actually embedded **TradingView's own website chart widget** — the same internal, undocumented object family as `tradingview.com` itself (§4.1: `activeChart()` → `chartWidget()` → `paneWidgets()` → `state().defaultPriceScale()`). The global is just named `tradingViewApi` here instead of `TradingViewApi`.
 
-I could not verify it. Brokerage sites are blocked by browsing policy in both available browsers — not overridable, and a sensible guardrail on a live-money account.
+**Net effect: better than expected.** One bridge implementation now covers both hosts (§5.1) — same method chain, same fragility profile, same mitigation. The finding does **not** make Kotak more stable than tradingview.com as I originally claimed; it makes the two *identical* in stability, and shareable in code.
 
-**Four questions gate P7. None can be answered from outside:**
+**Frame structure — the one real engineering wrinkle:**
 
-1. Is the chart inside an **iframe**? (→ `all_frames: true` + cross-frame messaging, or a dead end)
-2. Which global holds the widget? (`window.tvWidget`, something else, or nothing reachable)
-3. Does `priceToCoordinate` work there?
-4. What is the pane geometry / DOM shape around the chart?
-
-**Run this in the Console on a Kotak NIFTY chart (F12 → Console). Read-only — it reads properties and calls a pure coordinate function. It places nothing and clicks nothing. Result lands on your clipboard.**
-
-```bash
-copy(JSON.stringify((()=>{const o={url:location.href};o.iframes=[...document.querySelectorAll('iframe')].map(f=>({src:(f.src||'').slice(0,100),w:f.clientWidth,h:f.clientHeight}));o.canvases=[...document.querySelectorAll('canvas')].map(c=>({w:c.width,h:c.height,p:(c.parentElement?.className||'').toString().slice(0,50)}));const g=[];for(const k of Object.keys(window)){try{const v=window[k];if(v&&typeof v==='object'&&typeof v.activeChart==='function')g.push(k)}catch(e){}}o.widgetGlobals=g;o.tvWidget=typeof window.tvWidget;o.TradingView=typeof window.TradingView;const w=window.tvWidget||(g[0]?window[g[0]]:null);if(w){try{const c=w.activeChart();o.symbol=c.symbol();o.resolution=c.resolution();const ps=c.chartWidget().paneWidgets()[0].state().defaultPriceScale();o.priceToCoordinate=ps.priceToCoordinate(24000);o.coordinateToPrice=ps.coordinateToPrice(100);o.paneRect=c.chartWidget().paneWidgets()[0].canvasElement().getBoundingClientRect().toJSON()}catch(e){o.probeErr=e.message}}return o})(),null,1))
+```
+top document (trade.kotakneo.com/TradeFromCharts/…)
+  └─ iframe: https://trade.kotakneo.com/static/trading-view-v3/index.html
+       └─ iframe: blob:https://trade.kotakneo.com/<session-uuid>   ← the widget lives HERE
 ```
 
-If `iframes` shows the chart is inside one, switch the Console's frame dropdown (labelled `top`) to the chart frame and re-run.
+Confirmed via the probe: `widgetGlobals` and `canvases` were empty at the top frame and the first iframe; only the innermost blob iframe returned a populated `tradingViewApi` object, real canvases (`chart-gui-wrapper`, `price-axis`), and working coordinate math:
 
-**P7 cannot be estimated beyond its ~2-day placeholder until this output exists.** Everything else proceeds regardless.
+```json
+{
+  "symbol": "NSE_CM|NIFTY 50",
+  "resolution": "1",
+  "priceToCoordinateSample": 104.00434221146395,
+  "coordinateToPriceSample": 24601.532614605214,
+  "paneRect": { "x": 9, "y": 42, "width": 721, "height": 396, "right": 730, "bottom": 438 }
+}
+```
+
+Both conversions returned real, self-consistent numbers against a live NIFTY chart at ~24,600–24,625 — the same class of proof as §4.1. **The API works.**
+
+**Three engineering consequences from the frame nesting:**
+
+1. **Both our MAIN-world bridge and our ISOLATED-world widget script must target the innermost blob iframe directly**, not the top document. This actually *simplifies* the architecture over what I'd planned: since both scripts run in the same frame, they can coordinate with the ordinary same-frame `window.postMessage` protocol from §4.1 — **no cross-frame messaging needed.** The Shadow DOM host mounts inside that iframe's own document, and `paneRect` is used as-is with no outer-iframe offset math.
+
+2. **Matching a `blob:` URL in the manifest needs one of two mechanisms, to be validated during P1 build:**
+   - A direct match pattern: `"matches": ["blob:https://trade.kotakneo.com/*"]` with `all_frames: true` — Chrome supports `blob:`-scheme match patterns keyed on the origin that created the blob, and the trailing `*` covers the per-session UUID.
+   - If that proves unreliable, the manifest V3 fallback field `match_origin_as_fallback: true` on the content-script entry tells Chrome to check the *creating* origin (`https://trade.kotakneo.com`) for frames whose own URL can't be matched directly (the documented use case is exactly `blob:`/`data:`/`about:blank` frames).
+   Both are standard, documented MV3 mechanisms — I haven't run a live extension against this specific page yet, so this is the concrete P7 build task, not a remaining unknown about *whether* it's possible.
+
+3. **One more thing worth checking before P7, and it's yours to check (I can't reach the page):** does the blob iframe (or the middle static iframe) carry a `sandbox` attribute? A `sandbox` without `allow-scripts allow-same-origin` can block content-script injection or same-origin `postMessage` entirely. One-liner, read-only, run in the *top* frame console:
+   ```js
+   [...document.querySelectorAll('iframe')].map(f => ({src: f.src.slice(0,60), sandbox: f.getAttribute('sandbox')}))
+   ```
+   Then the same query run one level down (switch the console's frame dropdown to the first iframe) for its child. If either shows a `sandbox` value, paste it back — it would change how P7 injects.
+
+**Also confirmed, feeding directly into P5's symbol-mapping requirement:** Kotak's own symbol string is `"NSE_CM|NIFTY 50"` — visibly different from whatever `quantboard-pandapath`'s backend calls it (`NIFTY`, `NSE:NIFTY`, or similar). This is a concrete, real entry for the mapping table in §10 Q7, not a hypothetical.
+
+**P7 is now a scoped, bounded task** — frame-injection mechanics + one symbol-mapping entry — rather than an unknown second API to reverse-engineer.
 
 ---
 
@@ -148,9 +174,11 @@ If `iframes` shows the chart is inside one, switch the Console's frame dropdown 
 ```
 ┌─ MAIN world content script ── bridge.js ──────────────────────┐
 │  The ONLY code that touches host-page chart internals.        │
-│  TradingViewSiteBridge · KotakNeoBridge                        │
+│  TradingViewInternalApiBridge — ONE class, per-host config     │
+│  (candidate global names + frame-match pattern), since §4.2    │
+│  confirmed Kotak exposes the same method chain as TV itself.   │
 │  Small, defensive, disposable. Fix here when a vendor deploys. │
-└──────────────── window.postMessage (nonced) ──────────────────┘
+└──────────────── window.postMessage (nonced, same-frame) ──────┘
 ┌─ ISOLATED world content script ── content.js ─────────────────┐
 │  Shadow DOM host · widget UI · anchoring · drag · storage      │
 │  Knows nothing about TradingView or Kotak. Talks to a bridge.  │
@@ -180,9 +208,17 @@ interface ChartBridge {
   symbol(): string | null;
   onChange(cb: (r: 'range'|'symbol'|'interval'|'resize') => void): () => void;
 }
+
+// Updated per §4.2: tradingview-site and kotak-neo share ONE implementation.
+interface InternalApiHostConfig {
+  id: 'tradingview-site' | 'kotak-neo';
+  frameMatch: string;                // e.g. 'blob:https://trade.kotakneo.com/*'
+  candidateGlobals: string[];        // e.g. ['tradingViewApi', 'TradingViewApi']
+  symbolMap: Record<string, string>; // e.g. {'NSE_CM|NIFTY 50': 'NIFTY'}
+}
 ```
 
-Three implementations, one widget. Phase 2's `LightweightChartsBridge` is ~20 lines over the documented API — which is why the in-app port later costs ~3 days, not 12.
+Two implementations, one widget: `TradingViewInternalApiBridge` (config-driven, covers both tradingview.com and Kotak Neo — confirmed identical method chain in §4.1/§4.2) and Phase 2's `LightweightChartsBridge` (~20 lines over the documented public API — why the in-app port later costs ~3 days, not 12).
 
 ### 5.3 Folder structure
 
@@ -196,13 +232,14 @@ TradePilot/
 │   │   ├── OrderService.ts         # ⚠ the money path — see R-P4
 │   │   └── MessageRouter.ts
 │   ├── bridge/                     # ⚠ ALL fragile code lives here
-│   │   ├── mainWorld.ts            # MAIN-world entry; selects an adapter
+│   │   ├── mainWorld.ts            # MAIN-world entry; picks host config by location
 │   │   ├── ChartBridge.ts          # the interface
 │   │   ├── adapters/
-│   │   │   ├── TradingViewSiteBridge.ts
-│   │   │   └── KotakNeoBridge.ts
+│   │   │   ├── TradingViewInternalApiBridge.ts   # shared: TV site + Kotak (§4.2)
+│   │   │   ├── hostConfigs.ts                    # per-host: frameMatch, globals, symbolMap
+│   │   │   └── LightweightChartsBridge.ts        # Phase 2 only
 │   │   ├── CapabilityProbe.ts
-│   │   └── protocol.ts             # nonced postMessage envelope
+│   │   └── protocol.ts             # nonced postMessage envelope (same-frame, see §4.2)
 │   ├── content/
 │   │   ├── index.ts                # ISOLATED entry
 │   │   ├── Bootstrap.ts            # ready-gate → inject → observe → teardown
@@ -257,8 +294,8 @@ The product degrades. **It never lies, never shows a wrong price, and never brea
 ## 6. Phase 1 — detailed phases
 
 ### P0 — Discovery
-TradingView ✅ complete (§4.1). Kotak ⏳ awaiting your probe output (§4.2).
-**Est: 0.5 day** (Kotak analysis once output lands)
+TradingView ✅ complete (§4.1). Kotak ✅ complete (§4.2) — same internal API family, confirmed working, frame nesting mapped. **Both done. Remaining open item is the `sandbox` attribute check (§4.2), yours to run.**
+**Est: complete**
 
 ### P1 — Extension skeleton
 MV3 manifest (`minimum_chrome_version: 111`), Vite + TypeScript strict, two build configs (content scripts must be **IIFE** — MV3 content scripts don't support ESM; the service worker is `type: module`). Shadow DOM host. Typed message bus. Storage with schema + migrations scaffold. Popup: enable / disable / reset position / API status / version. ESLint flat config + Prettier + `import/no-restricted-paths` enforcing the bridge quarantine.
@@ -269,24 +306,35 @@ Manifest essentials:
 "host_permissions": ["https://*.tradingview.com/*",
                      "https://*.kotaksecurities.com/*",
                      "http://127.0.0.1:8000/*"],       // our FastAPI
-"content_scripts":  [ { world: "ISOLATED", js: ["content.js"] },
-                      { world: "MAIN",     js: ["bridge.js"]  } ]
+"content_scripts":  [
+  { matches: ["https://www.tradingview.com/chart/*"],
+    world: "ISOLATED", js: ["content.js"] },
+  { matches: ["https://www.tradingview.com/chart/*"],
+    world: "MAIN",     js: ["bridge.js"] },
+  { matches: ["https://trade.kotakneo.com/*", "blob:https://trade.kotakneo.com/*"],
+    all_frames: true, match_origin_as_fallback: true,
+    world: "ISOLATED", js: ["content.js"] },
+  { matches: ["https://trade.kotakneo.com/*", "blob:https://trade.kotakneo.com/*"],
+    all_frames: true, match_origin_as_fallback: true,
+    world: "MAIN",     js: ["bridge.js"] }
+]
 ```
+Kotak's entries carry `all_frames: true` and target the blob iframe directly (§4.2); TradingView's don't need either, since its chart is same-document.
 
 **R-P1**
 - Single-injection guard: a `window` flag **and** a DOM-id check — they fail in different situations (SPA nav vs. service-worker restart vs. multiple tabs).
 - SPA navigation: patch `pushState`/`replaceState`, listen to `popstate`, plus a `MutationObserver` backstop. Both targets are SPAs.
 - Full teardown on disable/navigate: remove host, disconnect every observer, release every listener. **Verified by toggling 20× and watching listener count and heap stay flat.**
-- `all_frames: false` by default; flipped only if the Kotak probe shows an iframe.
+- `all_frames: false` for TradingView (same-document chart); `all_frames: true` + `match_origin_as_fallback: true` for Kotak, confirmed necessary by §4.2's frame nesting.
 
 **Est: 2 days**
 
-### P2 — ChartBridge + TradingViewSiteBridge + probe
-The interface, the MAIN-world entry, the TradingView adapter over the verified calls in §4.1, the capability probe, the nonced postMessage protocol (namespace + per-session nonce; verify `event.source === window` and `event.origin === location.origin` — a page script can post into the isolated world).
+### P2 — ChartBridge + TradingViewInternalApiBridge + probe
+The interface, the MAIN-world entry, and the **shared** adapter over the verified calls in §4.1/§4.2 — built config-driven from the start (`hostConfigs.ts`: candidate globals, frame match, symbol map) so tradingview.com works immediately and Kotak only needs its config entry plus the frame-match wiring, not new logic. The capability probe. The nonced postMessage protocol (namespace + per-session nonce; verify `event.source === window` and `event.origin === location.origin` — a page script can post into the isolated world; same-frame for both hosts, per §4.2).
 
 **R-P2** as specified in §5.4, in full. **This ships before anything depends on the bridge, not after.**
 
-**Est: 2 days**
+**Est: 2 days** (covers tradingview.com fully; Kotak's config entry is written here too, its frame-injection wiring finishes in P7)
 
 ### P3 — Widget UI
 ```
@@ -369,19 +417,24 @@ Per §3: this places the **entry only**. `sl`/`tp` are recorded as *our* managed
 
 **Est: 2 days**
 
-### P7 — Kotak Neo adapter
-`KotakNeoBridge` over the probe's findings. If iframed: `all_frames: true` + frame-targeted injection + cross-frame messaging. Kotak symbol mapping. Re-run the full P4/P5/P6 test matrix on Kotak.
+### P7 — Kotak Neo frame wiring
+Per §4.2, this is narrower than originally scoped: the API itself is already covered by P2's shared bridge. What's left is purely the injection mechanics —
+- Wire the `blob:` match pattern + `match_origin_as_fallback` content-script entries (§manifest above) and confirm the content script actually lands inside the innermost blob iframe, not the middle static-HTML iframe.
+- If the `sandbox` check (§4.2) comes back with a restrictive value, adapt injection accordingly — same-origin script access or postMessage may need a different path.
+- Confirm the Shadow DOM host mounts correctly inside the blob iframe's own viewport (721×396 pane, per the probe) rather than the outer 800×505 iframe.
+- Wire the one confirmed symbol-map entry (`"NSE_CM|NIFTY 50"` → `NIFTY`) and extend for BANKNIFTY.
+- Re-run the full P4/P5/P6 test matrix inside the Kotak frame specifically — frame-nested DOM can have subtly different focus/event/z-index behavior than a top-level document.
 
-**R-P7:** identical probe + degradation contract as TradingView. Kotak-specific: if their chart is Advanced Charts with a documented API, prefer the public methods over internals wherever both exist — public API is far more stable.
+**R-P7:** identical probe + degradation contract as TradingView (§5.4) — a failed probe here (e.g., blocked by `sandbox`) degrades to manual mode exactly the same way, it doesn't fail differently just because it's a broker platform.
 
-**Est: 2 days** *(placeholder — firm only after the probe output)*
+**Est: 1.5 days** (down from 2 — the API-discovery risk that justified the original placeholder is resolved; what's left is frame plumbing, which is concrete and bounded)
 
 ### P8 — Hardening
 Full §7 checklist, §9 test matrix, and a **full trading-session soak, 9:15–15:30, DevTools open, zero errors, flat memory.** That soak is the real acceptance gate.
 
 **Est: 1.5 days**
 
-**Phase 1 total ≈ 12–14 days** (P7 firm only after the probe).
+**Phase 1 total ≈ 11–13 days.** (Both discovery phases are now complete; the estimate is firm except for whatever the `sandbox` check in §4.2 turns up.)
 
 ---
 
@@ -435,7 +488,7 @@ Widget layer < 0.3 ms/frame. Zero DOM writes when the chart is still. One rAF lo
 | 8.4 | **Position left unprotected** — backend down while open, TP/SL unenforced | **HIGH** | R-OCO: exit monitoring server-side only; unmissable warning; never client-side stops |
 | 8.5 | Widget jitter from continuously recomputed levels | MED | Hysteresis (move only if Δ > `max(2 ticks, 0.3×ATR)`); levels update ≤1/s and animate over 300ms while the entry marker rides at frame rate; freeze on interaction |
 | 8.6 | Regulatory / vendor policy | *Descoped* | Personal use, own wrapper API, human clicks every order. Revisit only if ever distributed. |
-| 8.7 | Kotak chart unreachable (iframe / no global) | MED | Probe answers it; worst case = manual mode, which is still a usable product |
+| 8.7 | Kotak `sandbox` iframe attribute blocks injection/messaging | LOW–MED | Awaiting your one-line check (§4.2); if restrictive, worst case = manual mode, still a usable product. Everything else about Kotak reachability is now resolved — the API works (§4.2). |
 | 8.8 | Chart feed ≠ our feed → widget sits a tick off the candle | LOW | Display-align to the chart's last price; trade off our feed. Decide in P5. |
 | 8.9 | Frame-rate damage to the host chart | MED | R-P4a: transform-only, sub-pixel skip, single loop, measured budget |
 
@@ -469,20 +522,21 @@ Widget layer < 0.3 ms/frame. Zero DOM writes when the chart is still. One rAF lo
 
 ## 10. Open questions
 
-1. **The Kotak probe output** (§4.2) — the one thing blocking P7. Everything else proceeds without it.
+1. **The Kotak `sandbox` attribute check** (§4.2) — the one remaining unknown, a single read-only line. Everything else about Kotak reachability is resolved.
 2. **Does `/v1/paper/recommend` produce a suggestion continuously, or only when `trade_recommended === true`?** Your no-strategy model needs levels available **at all times**, not just when a setup fires. If it's gated, we need a flag or an always-on `/levels` endpoint. **Most likely backend work item — I'd check this next.**
 3. **Does `POST /manual/order` dedupe by client key today?** If not, that's a required backend change before P6 (R-P6).
 4. **Where does the API run?** `http://127.0.0.1:8000` assumes same machine as the browser. If not, we need a host/tunnel and the `host_permissions` change.
 5. **Paper or live by default?** I recommend paper, with an explicit visually-distinct live toggle.
 6. **Multi-position display** — with several open positions plus a live suggestion, show all widgets or only the suggestion plus the selected position? Affects collision handling in P3.
 7. **TradingView symbol coverage** — which symbols do we map? NIFTY/BANKNIFTY only, or wider?
+8. **Full symbol map for Kotak** — confirmed so far: `"NSE_CM|NIFTY 50"` → `NIFTY`. Need the equivalent string for BANKNIFTY and any option-chain symbols before P7 wraps.
 
 ---
 
 ## 11. What happens first
 
-1. **P1 starts immediately** — the skeleton needs nothing from anyone.
-2. **You run the Kotak probe** (§4.2) whenever convenient; P7 unblocks when it lands.
+1. **P1 starts immediately** — both discovery phases are done; the skeleton needs nothing further from anyone.
+2. **You run the `sandbox`-attribute check** (§4.2) whenever convenient — the one loose end before P7's frame-injection work.
 3. **Check Q2 and Q3** in the backend — both may need work, and both gate later phases.
 
-The one thing worth restating: building on vendor internals means a deploy can break the integration. That risk is accepted and the plan handles it the only way it can be handled — a probe that detects breakage immediately and a degradation path that keeps the widget honest and usable when it happens. The bridge is one folder, so recovery is one file.
+The one thing worth restating: building on vendor internals means a deploy can break the integration — true for both tradingview.com and Kotak now that §4.2 showed they're the same API family. That risk is accepted, and it's handled the only way it can be: a probe that detects breakage immediately and a degradation path that keeps the widget honest and usable when it happens. The bridge is one class with per-host config, so recovery is one file, and a fix for one host's breakage very likely fixes the other's too.
