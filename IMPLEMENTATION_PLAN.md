@@ -163,7 +163,15 @@ Both conversions returned real, self-consistent numbers against a live NIFTY cha
 
 **Also confirmed, feeding directly into P5's symbol-mapping requirement:** Kotak's own symbol string is `"NSE_CM|NIFTY 50"` — visibly different from whatever `quantboard-pandapath`'s backend calls it (`NIFTY`, `NSE:NIFTY`, or similar). This is a concrete, real entry for the mapping table in §10 Q7, not a hypothetical.
 
-**P7 is now a scoped, bounded task** — frame-injection mechanics + one symbol-mapping entry — rather than an unknown second API to reverse-engineer.
+**`sandbox` check — RESOLVED, not a blocker.** Probed (read-only, both frame levels): the middle iframe (`trading-view-v3/index.html`) carries `sandbox="allow-forms allow-popups allow-scripts allow-same-origin"`; the innermost blob iframe reports no `sandbox` attribute of its own (`null`), but sandbox restrictions **inherit down the frame tree regardless of what a child's own attribute says** — a nested frame can only add restrictions, never shed ones its ancestor set. So the blob iframe's effective flags are its parent's.
+
+The two flags that would actually matter to us are both present:
+- **`allow-scripts`** ⇒ the blob iframe has a live JS execution context, so both our `MAIN`-world bridge script and our `ISOLATED`-world widget script can execute there.
+- **`allow-same-origin`** ⇒ the frame keeps its real origin (`https://trade.kotakneo.com`) instead of becoming opaque, so the nonced `postMessage` origin check from §4.1/§5.1 (`event.origin === location.origin`) works there unmodified.
+
+`allow-forms` / `allow-popups` are irrelevant to what we're building. **Nothing about this sandbox configuration blocks the plan.**
+
+**P7 is now a fully scoped, bounded task with no open unknowns** — frame-injection mechanics + one symbol-mapping entry — rather than an unknown second API to reverse-engineer.
 
 ---
 
@@ -294,7 +302,7 @@ The product degrades. **It never lies, never shows a wrong price, and never brea
 ## 6. Phase 1 — detailed phases
 
 ### P0 — Discovery
-TradingView ✅ complete (§4.1). Kotak ✅ complete (§4.2) — same internal API family, confirmed working, frame nesting mapped. **Both done. Remaining open item is the `sandbox` attribute check (§4.2), yours to run.**
+TradingView ✅ complete (§4.1). Kotak ✅ complete (§4.2) — same internal API family, confirmed working, frame nesting mapped, `sandbox` attributes checked and confirmed non-blocking. **Fully done, no open items.**
 **Est: complete**
 
 ### P1 — Extension skeleton
@@ -418,23 +426,22 @@ Per §3: this places the **entry only**. `sl`/`tp` are recorded as *our* managed
 **Est: 2 days**
 
 ### P7 — Kotak Neo frame wiring
-Per §4.2, this is narrower than originally scoped: the API itself is already covered by P2's shared bridge. What's left is purely the injection mechanics —
+Per §4.2, this is narrower than originally scoped: the API itself is already covered by P2's shared bridge, and the `sandbox` question that could have complicated injection is confirmed clear. What's left is purely the injection mechanics —
 - Wire the `blob:` match pattern + `match_origin_as_fallback` content-script entries (§manifest above) and confirm the content script actually lands inside the innermost blob iframe, not the middle static-HTML iframe.
-- If the `sandbox` check (§4.2) comes back with a restrictive value, adapt injection accordingly — same-origin script access or postMessage may need a different path.
 - Confirm the Shadow DOM host mounts correctly inside the blob iframe's own viewport (721×396 pane, per the probe) rather than the outer 800×505 iframe.
 - Wire the one confirmed symbol-map entry (`"NSE_CM|NIFTY 50"` → `NIFTY`) and extend for BANKNIFTY.
 - Re-run the full P4/P5/P6 test matrix inside the Kotak frame specifically — frame-nested DOM can have subtly different focus/event/z-index behavior than a top-level document.
 
-**R-P7:** identical probe + degradation contract as TradingView (§5.4) — a failed probe here (e.g., blocked by `sandbox`) degrades to manual mode exactly the same way, it doesn't fail differently just because it's a broker platform.
+**R-P7:** identical probe + degradation contract as TradingView (§5.4) — a failed probe here degrades to manual mode exactly the same way, it doesn't fail differently just because it's a broker platform.
 
-**Est: 1.5 days** (down from 2 — the API-discovery risk that justified the original placeholder is resolved; what's left is frame plumbing, which is concrete and bounded)
+**Est: 1.5 days** — firm. All discovery unknowns (API reachability, frame depth, sandbox restrictions) are now resolved; what remains is concrete plumbing.
 
 ### P8 — Hardening
 Full §7 checklist, §9 test matrix, and a **full trading-session soak, 9:15–15:30, DevTools open, zero errors, flat memory.** That soak is the real acceptance gate.
 
 **Est: 1.5 days**
 
-**Phase 1 total ≈ 11–13 days.** (Both discovery phases are now complete; the estimate is firm except for whatever the `sandbox` check in §4.2 turns up.)
+**Phase 1 total ≈ 11–13 days.** Both discovery phases and the `sandbox` check are now complete — this estimate is firm, no open discovery items remain.
 
 ---
 
@@ -488,7 +495,7 @@ Widget layer < 0.3 ms/frame. Zero DOM writes when the chart is still. One rAF lo
 | 8.4 | **Position left unprotected** — backend down while open, TP/SL unenforced | **HIGH** | R-OCO: exit monitoring server-side only; unmissable warning; never client-side stops |
 | 8.5 | Widget jitter from continuously recomputed levels | MED | Hysteresis (move only if Δ > `max(2 ticks, 0.3×ATR)`); levels update ≤1/s and animate over 300ms while the entry marker rides at frame rate; freeze on interaction |
 | 8.6 | Regulatory / vendor policy | *Descoped* | Personal use, own wrapper API, human clicks every order. Revisit only if ever distributed. |
-| 8.7 | Kotak `sandbox` iframe attribute blocks injection/messaging | LOW–MED | Awaiting your one-line check (§4.2); if restrictive, worst case = manual mode, still a usable product. Everything else about Kotak reachability is now resolved — the API works (§4.2). |
+| 8.7 | ~~Kotak `sandbox` iframe attribute blocks injection/messaging~~ **RESOLVED** | — | Checked (§4.2): `allow-scripts` + `allow-same-origin` present and inherited into the blob iframe. Neither script execution nor same-origin postMessage is restricted. Closed. |
 | 8.8 | Chart feed ≠ our feed → widget sits a tick off the candle | LOW | Display-align to the chart's last price; trade off our feed. Decide in P5. |
 | 8.9 | Frame-rate damage to the host chart | MED | R-P4a: transform-only, sub-pixel skip, single loop, measured budget |
 
@@ -522,21 +529,22 @@ Widget layer < 0.3 ms/frame. Zero DOM writes when the chart is still. One rAF lo
 
 ## 10. Open questions
 
-1. **The Kotak `sandbox` attribute check** (§4.2) — the one remaining unknown, a single read-only line. Everything else about Kotak reachability is resolved.
-2. **Does `/v1/paper/recommend` produce a suggestion continuously, or only when `trade_recommended === true`?** Your no-strategy model needs levels available **at all times**, not just when a setup fires. If it's gated, we need a flag or an always-on `/levels` endpoint. **Most likely backend work item — I'd check this next.**
-3. **Does `POST /manual/order` dedupe by client key today?** If not, that's a required backend change before P6 (R-P6).
-4. **Where does the API run?** `http://127.0.0.1:8000` assumes same machine as the browser. If not, we need a host/tunnel and the `host_permissions` change.
-5. **Paper or live by default?** I recommend paper, with an explicit visually-distinct live toggle.
-6. **Multi-position display** — with several open positions plus a live suggestion, show all widgets or only the suggestion plus the selected position? Affects collision handling in P3.
-7. **TradingView symbol coverage** — which symbols do we map? NIFTY/BANKNIFTY only, or wider?
-8. **Full symbol map for Kotak** — confirmed so far: `"NSE_CM|NIFTY 50"` → `NIFTY`. Need the equivalent string for BANKNIFTY and any option-chain symbols before P7 wraps.
+All discovery/reachability questions (§4.1, §4.2) are resolved. What remains is backend and product scope:
+
+1. **Does `/v1/paper/recommend` produce a suggestion continuously, or only when `trade_recommended === true`?** Your no-strategy model needs levels available **at all times**, not just when a setup fires. If it's gated, we need a flag or an always-on `/levels` endpoint. **Most likely backend work item — I'd check this next.**
+2. **Does `POST /manual/order` dedupe by client key today?** If not, that's a required backend change before P6 (R-P6).
+3. **Where does the API run?** `http://127.0.0.1:8000` assumes same machine as the browser. If not, we need a host/tunnel and the `host_permissions` change.
+4. **Paper or live by default?** I recommend paper, with an explicit visually-distinct live toggle.
+5. **Multi-position display** — with several open positions plus a live suggestion, show all widgets or only the suggestion plus the selected position? Affects collision handling in P3.
+6. **TradingView symbol coverage** — which symbols do we map? NIFTY/BANKNIFTY only, or wider?
+7. **Full symbol map for Kotak** — confirmed so far: `"NSE_CM|NIFTY 50"` → `NIFTY`. Need the equivalent string for BANKNIFTY and any option-chain symbols before P7 wraps.
 
 ---
 
 ## 11. What happens first
 
-1. **P1 starts immediately** — both discovery phases are done; the skeleton needs nothing further from anyone.
-2. **You run the `sandbox`-attribute check** (§4.2) whenever convenient — the one loose end before P7's frame-injection work.
-3. **Check Q2 and Q3** in the backend — both may need work, and both gate later phases.
+1. **P1 starts immediately** — all discovery is done (API reachability on both hosts, frame depth, `sandbox` restrictions); the skeleton needs nothing further from anyone.
+2. **Check Q1–Q2** in the backend — both may need work, and both gate later phases (Q1 gates the whole "always-on levels" premise; Q2 gates P6's safety requirement).
+3. **Confirm Q3–Q4** (API host, paper/live default) — quick decisions, not investigation.
 
-The one thing worth restating: building on vendor internals means a deploy can break the integration — true for both tradingview.com and Kotak now that §4.2 showed they're the same API family. That risk is accepted, and it's handled the only way it can be: a probe that detects breakage immediately and a degradation path that keeps the widget honest and usable when it happens. The bridge is one class with per-host config, so recovery is one file, and a fix for one host's breakage very likely fixes the other's too.
+The one thing worth restating: building on vendor internals means a deploy can break the integration — true for both tradingview.com and Kotak now that §4.2 showed they're the same API family. That risk is accepted, and it's handled the only way it can be: a probe that detects breakage immediately and a degradation path that keeps the widget honest and usable when it happens. The bridge is one class with per-host config, so recovery is one file, and a fix for one host's breakage very likely fixes the other's too. **With discovery fully closed out, nothing external blocks starting P1.**
