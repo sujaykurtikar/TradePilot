@@ -71,6 +71,34 @@ export interface PlaceOrderResponse {
   readonly message: string;
 }
 
-export type TradePilotRequest = GetStatusRequest | TabVisibilityMessage | PlaceOrderRequest;
+/**
+ * content -> background: adjust an OPEN position's SL/TP (§P6t —
+ * "trail SL/TP after a trade"). `requestId` is this call's idempotency
+ * key, same role as PlaceOrderRequest's clientOrderId. At least one of
+ * sl/tp must be present — dragging one pill leaves the other field
+ * `undefined` (not sent) rather than re-sending a value that didn't
+ * change, so a partial update can't accidentally clobber the other
+ * level with a stale client-side copy.
+ */
+export interface PositionRiskRequest {
+  readonly type: 'tradepilot/position-risk';
+  readonly requestId: string;
+  readonly positionId: string;
+  readonly account: string;
+  readonly sl?: number;
+  readonly tp?: number;
+}
+
+export type PositionRiskOutcome = 'accepted' | 'rejected' | 'ambiguous';
+
+export interface PositionRiskResponse {
+  readonly type: 'tradepilot/position-risk-result';
+  readonly requestId: string;
+  readonly outcome: PositionRiskOutcome;
+  readonly message: string;
+}
+
+export type TradePilotRequest =
+  GetStatusRequest | TabVisibilityMessage | PlaceOrderRequest | PositionRiskRequest;
 export type TradePilotPush = DataUpdateMessage;
-export type TradePilotResponse = StatusResponse | PlaceOrderResponse;
+export type TradePilotResponse = StatusResponse | PlaceOrderResponse | PositionRiskResponse;

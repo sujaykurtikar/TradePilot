@@ -10,6 +10,8 @@ import type {
   ApiReachability,
   PlaceOrderRequest,
   PlaceOrderResponse,
+  PositionRiskRequest,
+  PositionRiskResponse,
   StatusResponse,
   TradePilotRequest,
 } from '../core/messaging/messages';
@@ -24,10 +26,16 @@ export interface OrderPlacer {
   placeOrder(req: PlaceOrderRequest): Promise<PlaceOrderResponse>;
 }
 
+/** Narrow interface PositionRiskService satisfies — same testability rationale as OrderPlacer. */
+export interface PositionRiskUpdater {
+  updateRisk(req: PositionRiskRequest): Promise<PositionRiskResponse>;
+}
+
 export interface MessageRouterDeps {
   readonly storage: StorageManager;
   readonly tabRegistry: TabRegistry;
   readonly orderService: OrderPlacer;
+  readonly positionRiskService: PositionRiskUpdater;
   readonly getApiStatus: () => ApiReachability;
 }
 
@@ -80,6 +88,20 @@ export function registerMessageRouter(deps: MessageRouterDeps): void {
               clientOrderId: req.clientOrderId,
               outcome: 'ambiguous',
               message: 'Unknown — check positions. An internal error occurred handling the order.',
+            });
+          });
+        return true;
+      case 'tradepilot/position-risk':
+        deps.positionRiskService
+          .updateRisk(req)
+          .then(sendResponse)
+          .catch((error: unknown) => {
+            log.error('position-risk handler threw unexpectedly', { error: String(error) });
+            sendResponse({
+              type: 'tradepilot/position-risk-result',
+              requestId: req.requestId,
+              outcome: 'ambiguous',
+              message: 'Unknown — an internal error occurred handling the request.',
             });
           });
         return true;

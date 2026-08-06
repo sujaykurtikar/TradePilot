@@ -12,6 +12,7 @@
  */
 
 import type { ChartBridge } from '../bridge/ChartBridge';
+import type { DraggablePosition } from '../models/Position';
 import { AnchorManager } from './managers/AnchorManager';
 import { DragManager, type Offset } from './managers/DragManager';
 import { StateManager } from './managers/StateManager';
@@ -57,6 +58,15 @@ export interface WidgetRootOptions {
   /** §P2/CapabilityProbe's initial classification — defaults to 'anchored' (Day-1 has no probe wired in yet). */
   readonly initialMode?: WidgetMode;
   readonly initialManualReason?: string;
+  /**
+   * §P6t: fired when the user finishes dragging a TP/SL pill WHILE a
+   * position is set (setPosition()) — never fires pre-trade, where the
+   * same pointer-drag is purely cosmetic screen repositioning (§P3).
+   * WidgetRoot computes the target price via the bridge; the caller
+   * (content/Bootstrap.ts) owns validating it and submitting
+   * POST /position/risk.
+   */
+  readonly onPositionRiskDrag?: (variant: 'tp' | 'sl', newPrice: number) => void;
 }
 
 const TARGET_TP = 'level-pill-tp';
@@ -72,6 +82,7 @@ const MANUAL_LAYOUT_OFFSETS: Readonly<Record<string, { top: number; rightMargin:
 
 export class WidgetRoot {
   private readonly host: ShadowHost;
+  private readonly bridge: ChartBridge;
   private readonly dragManager = new DragManager();
   private readonly anchorManager: AnchorManager;
   private readonly stateManager: StateManager;
@@ -81,6 +92,8 @@ export class WidgetRoot {
   private readonly puck: HTMLButtonElement;
   private readonly demoBadge: HTMLDivElement | null = null;
   private suggestion: WidgetSuggestionData;
+  private position: DraggablePosition | null = null;
+  private readonly onPositionRiskDrag: ((variant: 'tp' | 'sl', newPrice: number) => void) | null;
   private unsubscribeState: (() => void) | null = null;
 
   private readonly onCollapsedChange: ((collapsed: boolean) => void) | null;
@@ -96,9 +109,11 @@ export class WidgetRoot {
   constructor(opts: WidgetRootOptions) {
     this.suggestion = opts.suggestion;
     this.host = new ShadowHost();
+    this.bridge = opts.bridge;
     this.anchorManager = new AnchorManager(opts.bridge, this.dragManager);
     this.stateManager = new StateManager({ collapsed: opts.initialCollapsed ?? false });
     this.onCollapsedChange = opts.onCollapsedChange ?? null;
+    this.onPositionRiskDrag = opts.onPositionRiskDrag ?? null;
     this.mode = opts.initialMode ?? 'anchored';
     this.initialManualReason = opts.initialManualReason ?? '';
 
@@ -168,17 +183,21 @@ export class WidgetRoot {
     this.dragManager.bind(TARGET_TP, this.tpPill.handleElement);
     this.dragManager.bind(TARGET_SL, this.slPill.handleElement);
     this.dragManager.bind(TARGET_SUGGESTION, this.suggestionCard.handleElement);
+    // §P6t: same pointer-drag mechanics as pre-trade cosmetic repositioning
+    // (§P3) — this listener only acts when a position is set, turning a
+    // committed drag into a price-drag instead of a screen offset.
+    this.dragManager.onDragEnd((id, offset) => this.handleLevelDragEnd(id, offset));
 
     this.anchorManager.addTarget({
       id: TARGET_TP,
       element: this.tpPill.element,
-      getPrice: () => this.suggestion.tp,
+      getPrice: () => this.effectiveTpPrice(),
       pinRight: true,
     });
     this.anchorManager.addTarget({
       id: TARGET_SL,
       element: this.slPill.element,
-      getPrice: () => this.suggestion.sl,
+      getPrice: () => this.effectiveSlPrice(),
       pinRight: true,
     });
     this.anchorManager.addTarget({
@@ -223,9 +242,92 @@ export class WidgetRoot {
   /** Called by content/Bootstrap.ts when new suggestion data arrives (hardcoded for Day-1, live from P5). */
   updateSuggestion(next: WidgetSuggestionData): void {
     this.suggestion = next;
-    this.tpPill.update({ variant: 'tp', price: next.tp });
-    this.slPill.update({ variant: 'sl', price: next.sl });
+    this.renderPills();
     this.renderSuggestionCard();
+  }
+
+  /**
+   * §P6t: "after Trade is clicked and a position is confirmed, the TP and
+   * SL pills switch from following the suggestion to independently
+   * anchored at the position's actual sl/tp." Pass null once the position
+   * closes to resume following the suggestion.
+   *
+   * §P6t mid-drag guard ("a poll landing mid-drag must not yank the
+   * pill"): whichever of TP/SL is currently being dragged keeps its OLD
+   * value from THIS update — the field being dragged is the one thing a
+   * concurrent data push must not overwrite.
+   */
+  setPosition(next: DraggablePosition | null): void {
+    let merged = next;
+    if (merged !== null) {
+      if (this.dragManager.isDragging(TARGET_TP) && this.position !== null) {
+        merged = { ...merged, tp: this.position.tp, tpState: this.position.tpState };
+      } else {
+        // Accepting fresh TP data for a field that ISN'T mid-drag — any
+        // leftover offset from a previous drag must not double-count on
+        // top of the new anchor (§P6t: avoids a snap-back-then-forward
+        // flicker between the optimistic pending price and confirmation).
+        this.dragManager.hydrate(TARGET_TP, { dx: 0, dy: 0 });
+      }
+      if (this.dragManager.isDragging(TARGET_SL) && this.position !== null) {
+        merged = { ...merged, sl: this.position.sl, slState: this.position.slState };
+      } else {
+        this.dragManager.hydrate(TARGET_SL, { dx: 0, dy: 0 });
+      }
+    }
+    this.position = merged;
+    this.renderPills();
+  }
+
+  private effectiveTpPrice(): number | null {
+    if (this.position === null) return this.suggestion.tp;
+    return this.position.tpState.kind === 'pending'
+      ? this.position.tpState.optimisticPrice
+      : this.position.tp;
+  }
+
+  private effectiveSlPrice(): number | null {
+    if (this.position === null) return this.suggestion.sl;
+    return this.position.slState.kind === 'pending'
+      ? this.position.slState.optimisticPrice
+      : this.position.sl;
+  }
+
+  private renderPills(): void {
+    this.tpPill.update({
+      variant: 'tp',
+      price: this.effectiveTpPrice(),
+      pending: this.position?.tpState.kind === 'pending',
+    });
+    this.slPill.update({
+      variant: 'sl',
+      price: this.effectiveSlPrice(),
+      pending: this.position?.slState.kind === 'pending',
+    });
+  }
+
+  /**
+   * §P6t: the pointer-drag mechanics are identical to pre-trade cosmetic
+   * repositioning (§P3/DragManager) — what differs is what happens at
+   * commit. With a position set, a committed TP/SL drag converts its
+   * screen-space offset into a target PRICE via the bridge, instead of
+   * just persisting a cosmetic offset.
+   */
+  private handleLevelDragEnd(id: string, offset: Offset): void {
+    if (this.position === null) return; // pre-trade: purely cosmetic, nothing more to do
+    if (id !== TARGET_TP && id !== TARGET_SL) return;
+    if (offset.dx === 0 && offset.dy === 0) return; // a zero-delta commit (e.g. a plain click) isn't a drag
+
+    const variant: 'tp' | 'sl' = id === TARGET_TP ? 'tp' : 'sl';
+    const currentPrice = variant === 'tp' ? this.effectiveTpPrice() : this.effectiveSlPrice();
+    if (currentPrice === null) return; // nothing to drag from — chart/position not ready
+
+    const baseY = this.bridge.priceToY(currentPrice);
+    if (baseY === null) return; // §7.1: never guess a price from an unavailable coordinate
+    const newPrice = this.bridge.yToPrice(baseY + offset.dy);
+    if (newPrice === null) return;
+
+    this.onPositionRiskDrag?.(variant, newPrice);
   }
 
   private renderSuggestionCard(): void {

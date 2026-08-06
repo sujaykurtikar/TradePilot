@@ -13,6 +13,7 @@ import { TabRegistry } from './TabRegistry';
 import { ApiClient } from './ApiClient';
 import { DataPoller } from './DataPoller';
 import { OrderService } from './OrderService';
+import { PositionRiskService } from './PositionRiskService';
 import { isMarketOpenIst } from '../utils/marketHours';
 import type { DataUpdateMessage } from '../core/messaging/messages';
 import { getLogger } from '../utils/logger';
@@ -29,6 +30,7 @@ const tabRegistry = new TabRegistry();
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000';
 const apiClient = new ApiClient({ baseUrl: DEFAULT_API_BASE_URL });
 const orderService = new OrderService(DEFAULT_API_BASE_URL);
+const positionRiskService = new PositionRiskService(DEFAULT_API_BASE_URL);
 
 const CONTENT_LIFECYCLE_PORT_NAME = 'tradepilot-content-lifecycle';
 
@@ -78,6 +80,7 @@ registerMessageRouter({
   storage,
   tabRegistry,
   orderService,
+  positionRiskService,
   getApiStatus: () => {
     const snapshot = poller.getSnapshot();
     if (snapshot.lastSuccessAtMs !== null) return 'reachable';

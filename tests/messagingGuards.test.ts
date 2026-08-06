@@ -3,6 +3,7 @@ import {
   isDataUpdateMessage,
   isGetStatusRequest,
   isPlaceOrderRequest,
+  isPositionRiskRequest,
   isTabVisibilityMessage,
   isTradePilotRequest,
 } from '../src/core/messaging/guards';
@@ -18,6 +19,14 @@ const VALID_PLACE_ORDER = {
   sl: 24050,
   tp: 24150,
   paperMode: true,
+};
+
+const VALID_POSITION_RISK = {
+  type: 'tradepilot/position-risk',
+  requestId: 'req-1',
+  positionId: 'pos-1',
+  account: 'acct-1',
+  sl: 24050,
 };
 
 describe('message guards — §7.1 "a guard, not a cast"', () => {
@@ -85,6 +94,34 @@ describe('message guards — §7.1 "a guard, not a cast"', () => {
     it('rejects a missing paperMode flag', () => {
       const { paperMode: _drop, ...rest } = VALID_PLACE_ORDER;
       expect(isPlaceOrderRequest(rest)).toBe(false);
+    });
+  });
+
+  describe('isPositionRiskRequest — §P6t/§R-P6t', () => {
+    it('accepts a well-formed request with only sl', () => {
+      expect(isPositionRiskRequest(VALID_POSITION_RISK)).toBe(true);
+      expect(isTradePilotRequest(VALID_POSITION_RISK)).toBe(true);
+    });
+
+    it('accepts a well-formed request with only tp', () => {
+      const { sl: _drop, ...rest } = VALID_POSITION_RISK;
+      expect(isPositionRiskRequest({ ...rest, tp: 24200 })).toBe(true);
+    });
+
+    it('rejects a request with NEITHER sl nor tp — nothing would actually change', () => {
+      const { sl: _drop, ...rest } = VALID_POSITION_RISK;
+      expect(isPositionRiskRequest(rest)).toBe(false);
+    });
+
+    it('rejects a non-finite sl/tp (NaN must never reach the network, §7.1)', () => {
+      expect(isPositionRiskRequest({ ...VALID_POSITION_RISK, sl: NaN })).toBe(false);
+    });
+
+    it('rejects a missing requestId, positionId, or account', () => {
+      const { requestId: _drop, ...rest } = VALID_POSITION_RISK;
+      expect(isPositionRiskRequest(rest)).toBe(false);
+      expect(isPositionRiskRequest({ ...VALID_POSITION_RISK, positionId: '' })).toBe(false);
+      expect(isPositionRiskRequest({ ...VALID_POSITION_RISK, account: '' })).toBe(false);
     });
   });
 });

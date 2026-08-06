@@ -26,9 +26,15 @@ export class DragManager {
   private readonly dragStartOffsets = new Map<string, Offset>();
   private readonly handles: Destroyable[] = [];
   private readonly changeListeners = new Set<(elementId: string, offset: Offset) => void>();
+  private readonly dragEndListeners = new Set<(elementId: string, offset: Offset) => void>();
 
   getOffset(elementId: string): Offset {
     return this.offsets.get(elementId) ?? ZERO_OFFSET;
+  }
+
+  /** §P6t: a poll landing mid-drag must not yank the pill — callers check this before re-anchoring a dragged element to fresh server data. */
+  isDragging(elementId: string): boolean {
+    return this.dragStartOffsets.has(elementId);
   }
 
   setOffset(elementId: string, offset: Offset): void {
@@ -46,6 +52,18 @@ export class DragManager {
     return () => this.changeListeners.delete(cb);
   }
 
+  /**
+   * Fires once when a drag is COMMITTED — pointer released, or a
+   * keyboard nudge (which has no separate release event, so each nudge
+   * counts as its own commit). Distinct from onChange, which also fires
+   * on every intermediate pointermove; §P6t's price-drag-to-server logic
+   * needs "the user is done," not "the pointer moved."
+   */
+  onDragEnd(cb: (elementId: string, offset: Offset) => void): () => void {
+    this.dragEndListeners.add(cb);
+    return () => this.dragEndListeners.delete(cb);
+  }
+
   /** Wires a drag handle element to update `elementId`'s offset live during drag. */
   bind(elementId: string, handleElement: HTMLElement): void {
     const applyDelta = (delta: DragDelta): Offset => {
@@ -61,12 +79,16 @@ export class DragManager {
         this.setOffset(elementId, applyDelta(delta));
       },
       onDragEnd: (delta) => {
-        this.setOffset(elementId, applyDelta(delta));
+        const offset = applyDelta(delta);
+        this.setOffset(elementId, offset);
         this.dragStartOffsets.delete(elementId);
+        for (const cb of this.dragEndListeners) cb(elementId, offset);
       },
       onKeyboardNudge: (delta) => {
         const current = this.getOffset(elementId);
-        this.setOffset(elementId, { dx: current.dx + delta.dx, dy: current.dy + delta.dy });
+        const offset = { dx: current.dx + delta.dx, dy: current.dy + delta.dy };
+        this.setOffset(elementId, offset);
+        for (const cb of this.dragEndListeners) cb(elementId, offset);
       },
     });
     this.handles.push(handle);
@@ -95,5 +117,6 @@ export class DragManager {
     this.offsets.clear();
     this.dragStartOffsets.clear();
     this.changeListeners.clear();
+    this.dragEndListeners.clear();
   }
 }

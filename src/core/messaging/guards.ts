@@ -10,6 +10,7 @@ import type {
   DataUpdateMessage,
   GetStatusRequest,
   PlaceOrderRequest,
+  PositionRiskRequest,
   TabVisibilityMessage,
   TradePilotRequest,
 } from './messages';
@@ -55,8 +56,24 @@ export function isPlaceOrderRequest(value: unknown): value is PlaceOrderRequest 
   );
 }
 
+/** §R-P6t: sl/tp are each OPTIONAL (a partial update sends only the field that changed) but if present must be finite — never NaN reaching the network. */
+export function isPositionRiskRequest(value: unknown): value is PositionRiskRequest {
+  if (!isRecord(value) || value.type !== 'tradepilot/position-risk') return false;
+  if (typeof value.requestId !== 'string' || value.requestId.length === 0) return false;
+  if (typeof value.positionId !== 'string' || value.positionId.length === 0) return false;
+  if (typeof value.account !== 'string' || value.account.length === 0) return false;
+  if ('sl' in value && value.sl !== undefined && !isFiniteNumber(value.sl)) return false;
+  if ('tp' in value && value.tp !== undefined && !isFiniteNumber(value.tp)) return false;
+  return value.sl !== undefined || value.tp !== undefined; // at least one field must actually change
+}
+
 export function isTradePilotRequest(value: unknown): value is TradePilotRequest {
-  return isGetStatusRequest(value) || isTabVisibilityMessage(value) || isPlaceOrderRequest(value);
+  return (
+    isGetStatusRequest(value) ||
+    isTabVisibilityMessage(value) ||
+    isPlaceOrderRequest(value) ||
+    isPositionRiskRequest(value)
+  );
 }
 
 /** Loose on purpose — the snapshot's internal shape is trusted because WE produced it in the background (mapChartState/mapRecommend already guarded it on the way in); this just confirms the envelope. */

@@ -25,10 +25,13 @@ import { isDataUpdateMessage } from '../core/messaging/guards';
 import type {
   PlaceOrderRequest,
   PlaceOrderResponse,
+  PositionRiskRequest,
+  PositionRiskResponse,
   TabVisibilityMessage,
 } from '../core/messaging/messages';
 import type { MarketDataSnapshot } from '../core/api/types';
 import type { Suggestion } from '../models/Suggestion';
+import type { DraggablePosition, Position, RiskLevelReconciliationState } from '../models/Position';
 import type { TradeConfirmDetails } from '../widget/components/SuggestionCard';
 import { getLogger } from '../utils/logger';
 
@@ -44,11 +47,29 @@ const DEFAULT_LOTS = 1;
 /** §P6 slippage guard tolerance: the greater of 0.5% or a fixed floor (so a near-zero-priced instrument still gets a sane minimum tolerance). */
 const SLIPPAGE_TOLERANCE_FRACTION = 0.005;
 const SLIPPAGE_MIN_TOLERANCE = 0.5;
+/**
+ * §P6t tick size for snapping a dragged price. Not in the documented API
+ * contract (§2 doesn't specify one) — 0.05 is NSE's standard index-option
+ * tick, used here as a stated assumption, not a confirmed value.
+ */
+const TICK_SIZE = 0.05;
 
 interface ActiveConfirmContext {
   readonly suggestion: Suggestion;
   readonly lots: number;
   readonly lotSize: number | null;
+}
+
+/**
+ * §P6t: a drag-in-flight for one position/field, held here so it survives
+ * concurrent DataPoller pushes that arrive before the server responds —
+ * without this, a poll landing between "user released the pill" and "the
+ * request resolved" would flash the pill back to the pre-drag value.
+ */
+interface PendingRiskDrag {
+  readonly positionId: string;
+  readonly variant: 'tp' | 'sl';
+  readonly price: number;
 }
 
 async function waitForFirstBar(bridge: BridgeClient, graceMs: number): Promise<number | null> {
@@ -106,6 +127,9 @@ export class Bootstrap {
   private confirmShowing = false;
   private activeConfirmContext: ActiveConfirmContext | null = null;
   private readonly onVisibilityChange = (): void => reportTabVisibility();
+
+  // §P6t trail SL/TP state.
+  private pendingRiskDrag: PendingRiskDrag | null = null;
 
   async start(): Promise<void> {
     if (!shouldInject()) {
@@ -235,6 +259,7 @@ export class Bootstrap {
         void this.storage.patch({ widgetCollapsed: collapsed });
       },
       onOffsetChange: (id, offset) => this.persistOffsetDebounced(id, offset),
+      onPositionRiskDrag: (variant, newPrice) => this.handlePositionRiskDrag(variant, newPrice),
       suggestion: {
         symbolLabel: suggestionConfig.strikeLabel,
         subLabel: `Entry ${suggestionConfig.entry}`,
@@ -305,6 +330,12 @@ export class Bootstrap {
     // unprotected-position warning is a safety signal, not a suggestion.
     this.updateUnprotectedWarning(widget, snapshot);
 
+    // §P6t: switches TP/SL pills to track the open position's actual
+    // levels instead of the suggestion, the moment one exists. Also
+    // never suppressed by the suggestion-freeze below — a position's
+    // real levels are a different concern from a not-yet-confirmed trade.
+    widget.setPosition(this.buildDraggablePosition(snapshot.positions[0] ?? null));
+
     // §R-P5 "unmapped symbol hides the widget rather than guessing."
     const chartSymbol = bridge.symbol();
     const mappedSymbol = chartSymbol !== null ? (hostConfig.symbolMap[chartSymbol] ?? null) : null;
@@ -365,6 +396,138 @@ export class Bootstrap {
       );
     } else {
       widget.setUnprotectedWarning(false);
+    }
+  }
+
+  /**
+   * Converts a plain Position (from the poll snapshot) into the
+   * DraggablePosition WidgetRoot renders, overlaying any drag currently
+   * in flight (§P6t's mid-drag/concurrent-poll guard — see
+   * PendingRiskDrag's doc comment).
+   */
+  private buildDraggablePosition(position: Position | null): DraggablePosition | null {
+    if (position === null) return null;
+    const confirmed: RiskLevelReconciliationState = { kind: 'confirmed' };
+    let tpState: RiskLevelReconciliationState = confirmed;
+    let slState: RiskLevelReconciliationState = confirmed;
+    const pending = this.pendingRiskDrag;
+    if (pending !== null && pending.positionId === position.positionId) {
+      if (pending.variant === 'tp') tpState = { kind: 'pending', optimisticPrice: pending.price };
+      if (pending.variant === 'sl') slState = { kind: 'pending', optimisticPrice: pending.price };
+    }
+    return { ...position, tpState, slState };
+  }
+
+  /**
+   * §P6t tick-size snap + best-effort side-of-entry validation. Position
+   * (§2) carries no explicit direction field — `delta`'s sign is used as
+   * a directionality proxy (positive ~ long call/bullish, negative ~ long
+   * put/bearish). This is a stated heuristic, not a guarantee; the server
+   * remains the authoritative validator regardless.
+   */
+  private validateSideOfEntry(position: Position, variant: 'tp' | 'sl', price: number): boolean {
+    if (position.entrySpot === null) return true; // nothing to validate against — don't block
+    const bullish = (position.delta ?? 0) >= 0;
+    const aboveEntry = price > position.entrySpot;
+    return variant === 'tp' ? aboveEntry === bullish : aboveEntry !== bullish;
+  }
+
+  /**
+   * §P6t: fired by WidgetRoot once a TP/SL pill drag commits while a
+   * position is set. Snaps to tick, validates side-of-entry, shows an
+   * optimistic pending state immediately, then submits exactly once
+   * (§R-P6t applies R-P6's idempotency/no-auto-retry rules here).
+   */
+  private handlePositionRiskDrag(variant: 'tp' | 'sl', rawPrice: number): void {
+    const widget = this.widget;
+    const snapshot = this.latestSnapshot;
+    const position = snapshot?.positions[0] ?? null;
+    if (widget === null || snapshot === null || position === null) return;
+
+    const price = Math.round(rawPrice / TICK_SIZE) * TICK_SIZE;
+
+    if (!this.validateSideOfEntry(position, variant, price)) {
+      widget.showToast(
+        `${variant.toUpperCase()} must stay on the correct side of entry — drag rejected.`,
+      );
+      widget.setPosition(this.buildDraggablePosition(position)); // snap back — no pendingRiskDrag was ever set
+      return;
+    }
+
+    // §R-P6t: "If the backend is unreachable while a position is open,
+    // dragging is disabled entirely (can't safely change a stop you
+    // can't confirm)."
+    if (!isSnapshotFresh(snapshot, Date.now())) {
+      widget.showToast('Backend unreachable — cannot adjust SL/TP right now.');
+      widget.setPosition(this.buildDraggablePosition(position));
+      return;
+    }
+
+    this.pendingRiskDrag = { positionId: position.positionId, variant, price };
+    widget.setPosition(this.buildDraggablePosition(position));
+
+    void this.submitPositionRisk(position, variant, price);
+  }
+
+  private async submitPositionRisk(
+    position: Position,
+    variant: 'tp' | 'sl',
+    price: number,
+  ): Promise<void> {
+    const requestId = crypto.randomUUID();
+    const request: PositionRiskRequest =
+      variant === 'tp'
+        ? {
+            type: 'tradepilot/position-risk',
+            requestId,
+            positionId: position.positionId,
+            account: position.account,
+            tp: price,
+          }
+        : {
+            type: 'tradepilot/position-risk',
+            requestId,
+            positionId: position.positionId,
+            account: position.account,
+            sl: price,
+          };
+
+    let response: PositionRiskResponse | null = null;
+    try {
+      const rawResponse: PositionRiskResponse | undefined =
+        await chrome.runtime.sendMessage(request);
+      response = rawResponse ?? null;
+    } catch (error) {
+      log.error('position-risk submission failed to reach the service worker', {
+        requestId,
+        error: String(error),
+      });
+    }
+
+    // Only clear the pending marker if it's still THIS drag — a newer
+    // drag on the same field may have already superseded it.
+    const stillCurrent =
+      this.pendingRiskDrag?.positionId === position.positionId &&
+      this.pendingRiskDrag.variant === variant &&
+      this.pendingRiskDrag.price === price;
+    if (stillCurrent) this.pendingRiskDrag = null;
+
+    if (response === null || response.outcome !== 'accepted') {
+      // §P6t: "Backend rejects a dragged level -> Pill snaps back to
+      // last confirmed value, reason shown." Never leave the UI showing
+      // a level the backend didn't actually accept.
+      const reason = response?.message ?? 'Unknown — check positions.';
+      this.widget?.showToast(`${variant.toUpperCase()} update failed: ${reason}`);
+    }
+
+    // Re-render from whatever the latest snapshot currently says — either
+    // the next poll has already caught up to the new confirmed value, or
+    // (on rejection) this correctly reverts to the last server-known one.
+    if (stillCurrent && this.latestSnapshot !== null) {
+      const latestPosition = this.latestSnapshot.positions.find(
+        (p) => p.positionId === position.positionId,
+      );
+      this.widget?.setPosition(this.buildDraggablePosition(latestPosition ?? position));
     }
   }
 
