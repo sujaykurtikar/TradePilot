@@ -94,6 +94,48 @@ export class DragManager {
     this.handles.push(handle);
   }
 
+  /**
+   * Wires one handle (the Suggested card's icon) to move several element
+   * ids together as a rigid group — "drag the group, the TP pill/SL pill/
+   * card/connector line all move as one" per the on-chart reference. Each
+   * id keeps its OWN offset (so a subsequent individual pill drag still
+   * works normally), this just applies the same delta to all of them at
+   * once during a group drag.
+   *
+   * Deliberately does not fire onDragEnd listeners: those drive §P6t's
+   * "commit a TP/SL pointer-drag into a price change" logic, and a group
+   * move is a cosmetic reposition, never a price-drag gesture.
+   */
+  bindGroup(handleElement: HTMLElement, elementIds: readonly string[]): void {
+    const dragStarts = new Map<string, Offset>();
+
+    const handle = attachDragHandle(handleElement, {
+      onDragStart: () => {
+        for (const id of elementIds) dragStarts.set(id, this.getOffset(id));
+      },
+      onDragMove: (delta) => {
+        for (const id of elementIds) {
+          const start = dragStarts.get(id) ?? ZERO_OFFSET;
+          this.setOffset(id, { dx: start.dx + delta.dx, dy: start.dy + delta.dy });
+        }
+      },
+      onDragEnd: (delta) => {
+        for (const id of elementIds) {
+          const start = dragStarts.get(id) ?? ZERO_OFFSET;
+          this.setOffset(id, { dx: start.dx + delta.dx, dy: start.dy + delta.dy });
+        }
+        dragStarts.clear();
+      },
+      onKeyboardNudge: (delta) => {
+        for (const id of elementIds) {
+          const current = this.getOffset(id);
+          this.setOffset(id, { dx: current.dx + delta.dx, dy: current.dy + delta.dy });
+        }
+      },
+    });
+    this.handles.push(handle);
+  }
+
   /** Restores a persisted offset (e.g. loaded from chrome.storage) without triggering onChange. */
   hydrate(elementId: string, offset: Offset): void {
     this.offsets.set(elementId, offset);

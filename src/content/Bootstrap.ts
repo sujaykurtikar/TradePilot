@@ -40,6 +40,10 @@ const log = getLogger('content:bootstrap');
 const LAST_BAR_GRACE_MS = 5000;
 const LAST_BAR_POLL_MS = 250;
 const OFFSET_PERSIST_DEBOUNCE_MS = 400;
+/** A single failed probe is often just a chart redraw/pan/zoom mid-tick — only a sustained outage should tear the widget down. */
+const UNAVAILABLE_PROBES_BEFORE_TEARDOWN = 3;
+/** Retry interval for the automatic remount loop once the widget is missing (torn down, or an earlier mount attempt failed). */
+const REMOUNT_RETRY_MS = 5000;
 /** §R-P5: "last success > 15s ago" -> stale. Matches DataPoller's own base poll interval (5s) with real margin. */
 const FRESHNESS_WINDOW_MS = 15_000;
 /** §10: no lot-size selector exists in the plan's UI (the screenshot shows no quantity stepper) — fixed at 1 until that's scoped. */
@@ -104,6 +108,9 @@ export class Bootstrap {
   private spaObserver: SpaNavigationObserver | null = null;
   private disposed = false;
   private runToken = 0;
+  private consecutiveUnavailableProbes = 0;
+  private remountTimer: ReturnType<typeof setTimeout> | null = null;
+  private mountInFlight = false;
 
   private readonly storage = new StorageManager();
   private storageUnsubscribe: (() => void) | null = null;
@@ -127,7 +134,16 @@ export class Bootstrap {
   private frozenSnapshot: MarketDataSnapshot | null = null;
   private confirmShowing = false;
   private activeConfirmContext: ActiveConfirmContext | null = null;
-  private readonly onVisibilityChange = (): void => reportTabVisibility();
+  private readonly onVisibilityChange = (): void => {
+    reportTabVisibility();
+    // TradingView stops rendering the chart entirely while the tab is
+    // hidden (canvases collapse to 0x0), so a widget that went missing
+    // while backgrounded should come straight back the moment the tab is
+    // visible again — not wait for the next scheduled retry.
+    if (document.visibilityState === 'visible' && this.widget === null) {
+      void this.runOnce();
+    }
+  };
 
   // §P6t trail SL/TP state.
   private pendingRiskDrag: PendingRiskDrag | null = null;
@@ -195,7 +211,38 @@ export class Bootstrap {
     }
   }
 
+  /** Guards against overlapping mount attempts (e.g. the visibility handler and the retry timer firing close together), then schedules a retry if the widget still isn't up afterward. */
   private async runOnce(): Promise<void> {
+    if (this.mountInFlight) return;
+    this.mountInFlight = true;
+    try {
+      await this.attemptMount();
+    } catch (error) {
+      // A throw anywhere in attemptMount (e.g. a bridge call landing mid-SPA-
+      // re-render) must never silently kill the retry loop — without this
+      // catch, an unhandled rejection here means scheduleRemount() below
+      // never runs and the widget stays gone until the page is reloaded.
+      log.error('mount attempt threw — will retry', { error: String(error) });
+    } finally {
+      this.mountInFlight = false;
+    }
+    if (this.widget === null) this.scheduleRemount();
+  }
+
+  /** Retries a missing widget on a timer — covers both "torn down after a sustained probe outage" and "chart wasn't ready yet on the last attempt." A page reload should never be necessary. */
+  private scheduleRemount(): void {
+    if (this.disposed || !this.lastKnownEnabled) return;
+    if (this.remountTimer !== null) return;
+    if (document.visibilityState !== 'visible') return; // onVisibilityChange retries immediately once it is
+    this.remountTimer = setTimeout(() => {
+      this.remountTimer = null;
+      if (this.disposed || !this.lastKnownEnabled || this.widget !== null) return;
+      if (document.visibilityState !== 'visible') return;
+      void this.runOnce();
+    }, REMOUNT_RETRY_MS);
+  }
+
+  private async attemptMount(): Promise<void> {
     const token = ++this.runToken;
     const hostConfig = resolveHostConfigForLocation(window.location);
     if (hostConfig === null) {
@@ -314,13 +361,31 @@ export class Bootstrap {
 
   private handleProbeUpdate(state: DegradationState, token: number): void {
     if (this.disposed || token !== this.runToken || this.widget === null) return;
+    // TradingView doesn't render its chart in a backgrounded tab, so every
+    // coordinate check fails there for reasons unrelated to whether the
+    // bridge actually works — ignore probes entirely while hidden rather
+    // than let ordinary tab-switching tear the widget down.
+    if (document.visibilityState !== 'visible') return;
+
     if (state.mode === 'unavailable') {
-      log.error('capability probe lost the chart bridge mid-session — tearing the widget down', {
-        reason: state.reason,
-      });
+      this.consecutiveUnavailableProbes += 1;
+      if (this.consecutiveUnavailableProbes < UNAVAILABLE_PROBES_BEFORE_TEARDOWN) {
+        log.warn('capability probe reported unavailable — riding out a transient blip', {
+          reason: state.reason,
+          streak: this.consecutiveUnavailableProbes,
+        });
+        return;
+      }
+      log.error(
+        'capability probe lost the chart bridge across multiple consecutive checks — tearing the widget down',
+        { reason: state.reason },
+      );
       this.teardownWidgetAndBridge();
+      this.scheduleRemount();
       return;
     }
+
+    this.consecutiveUnavailableProbes = 0;
     this.widget.setMode(state.mode, state.reason);
   }
 
@@ -760,6 +825,10 @@ export class Bootstrap {
     this.widget = null;
     this.bridge?.dispose();
     this.bridge = null;
+    this.consecutiveUnavailableProbes = 0;
+    // Invalidates any mount attempt still in flight (e.g. an in-progress
+    // waitForChartReady/probe from a stale attemptMount call).
+    this.runToken += 1;
     // The widget is gone for reasons unrelated to symbol mapping (nav,
     // disable, teardown) — a stale "hidden because X" would mislead the
     // popup into blaming a cause that may no longer apply.
@@ -770,6 +839,8 @@ export class Bootstrap {
   destroy(): void {
     this.disposed = true;
     if (this.offsetPersistTimer !== null) clearTimeout(this.offsetPersistTimer);
+    if (this.remountTimer !== null) clearTimeout(this.remountTimer);
+    this.remountTimer = null;
     this.storageUnsubscribe?.();
     this.storageUnsubscribe = null;
     chrome.runtime.onMessage.removeListener(this.onRuntimeMessage);

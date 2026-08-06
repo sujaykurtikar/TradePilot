@@ -33,6 +33,15 @@ export interface SuggestionCardProps {
   readonly tradeDisabled?: boolean;
   readonly tradeLabel?: string; // defaults to "Trade"
   readonly staleReason?: string | null;
+  /**
+   * True once a position exists for this widget (§P6t). The TP/SL pills
+   * switch to tracking the position's real levels the instant this
+   * happens, which can visibly differ from the last-shown suggestion —
+   * the card must say so plainly ("Position", not "Suggested") rather
+   * than silently keep the old label, which reads as an unexplained
+   * glitch when the pills jump.
+   */
+  readonly hasPosition?: boolean;
   readonly onTrade: () => void;
   /** §P6: freeze the suggestion on hover/focus of Trade — levels must not shift mid-decision. */
   readonly onTradeFocusChange?: (focused: boolean) => void;
@@ -56,35 +65,33 @@ export function createSuggestionCard(initial: SuggestionCardProps): SuggestionCa
   root.setAttribute('role', 'group');
   root.setAttribute('aria-label', 'Suggested trade');
 
-  const header = document.createElement('div');
-  header.className = 'tp-card__header';
-
   const handle = document.createElement('span');
-  handle.className = 'tp-pill__handle';
-  handle.textContent = '⠿';
-
-  const title = document.createElement('span');
-  title.className = 'tp-card__title';
-  title.textContent = '⚡ Suggested';
-
-  header.append(handle, title);
+  handle.className = 'tp-card__icon';
+  handle.textContent = '⇄';
+  handle.setAttribute('aria-hidden', 'true');
 
   // ---- normal view ----
   const body = document.createElement('div');
   body.className = 'tp-card__body';
 
-  const symbolWrap = document.createElement('div');
+  const textCol = document.createElement('div');
+  textCol.className = 'tp-card__text';
+
+  const title = document.createElement('div');
+  title.className = 'tp-card__title';
+  title.textContent = 'Suggested';
+
   const symbol = document.createElement('div');
   symbol.className = 'tp-card__symbol';
   const sub = document.createElement('div');
   sub.className = 'tp-card__symbol-sub';
-  symbolWrap.append(symbol, sub);
+  textCol.append(title, symbol, sub);
 
   const tradeBtn = document.createElement('button');
   tradeBtn.type = 'button';
   tradeBtn.className = 'tp-card__trade-btn';
 
-  body.append(symbolWrap, tradeBtn);
+  body.append(handle, textCol, tradeBtn);
 
   // ---- confirm view (§P6) ----
   const confirmView = document.createElement('div');
@@ -109,7 +116,7 @@ export function createSuggestionCard(initial: SuggestionCardProps): SuggestionCa
   confirmActions.append(cancelBtn, confirmBtn);
   confirmView.append(confirmSummary, confirmActions);
 
-  root.append(header, body, confirmView);
+  root.append(body, confirmView);
 
   let currentProps: SuggestionCardProps = initial;
 
@@ -167,6 +174,9 @@ export function createSuggestionCard(initial: SuggestionCardProps): SuggestionCa
     }
     body.style.display = '';
     confirmView.style.display = 'none';
+
+    title.textContent = props.hasPosition ? 'Position' : 'Suggested';
+    root.setAttribute('aria-label', props.hasPosition ? 'Open position' : 'Suggested trade');
 
     symbol.textContent = props.symbolLabel;
     sub.textContent = props.subLabel ?? '';

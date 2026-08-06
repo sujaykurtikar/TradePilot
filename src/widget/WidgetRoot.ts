@@ -13,7 +13,7 @@
 
 import type { ChartBridge } from '../bridge/ChartBridge';
 import type { DraggablePosition } from '../models/Position';
-import { AnchorManager } from './managers/AnchorManager';
+import { AnchorManager, type PaneRectOrNull } from './managers/AnchorManager';
 import { DragManager, type Offset } from './managers/DragManager';
 import { StateManager } from './managers/StateManager';
 import { ShadowHost } from './ShadowHost';
@@ -73,6 +73,9 @@ const TARGET_TP = 'level-pill-tp';
 const TARGET_SL = 'level-pill-sl';
 const TARGET_SUGGESTION = 'suggestion-card';
 
+/** Gutter from right edge of the chart pane — pills/card/line anchor at this X. */
+const CONNECTOR_GUTTER_PX = 12;
+
 /** Manual-mode fixed layout — top-right stack, independent of any chart coordinate math (§R-P2). */
 const MANUAL_LAYOUT_OFFSETS: Readonly<Record<string, { top: number; rightMargin: number }>> = {
   [TARGET_TP]: { top: 56, rightMargin: 220 },
@@ -105,6 +108,8 @@ export class WidgetRoot {
   private unsubscribeDragForManual: (() => void) | null = null;
   private currentConfirm: TradeConfirmDetails | null = null;
   private readonly unprotectedBanner: HTMLDivElement;
+  private readonly connectorLineTp: HTMLDivElement;
+  private readonly connectorLineSl: HTMLDivElement;
 
   constructor(opts: WidgetRootOptions) {
     this.suggestion = opts.suggestion;
@@ -170,7 +175,14 @@ export class WidgetRoot {
       this.demoBadge.textContent = 'DEMO';
     }
 
+    this.connectorLineTp = document.createElement('div');
+    this.connectorLineTp.className = 'tp-connector-line tp-connector-line--tp tp-positioned tp-positioned--hidden';
+    this.connectorLineSl = document.createElement('div');
+    this.connectorLineSl.className = 'tp-connector-line tp-connector-line--sl tp-positioned tp-positioned--hidden';
+
     this.host.layer.append(
+      this.connectorLineTp,
+      this.connectorLineSl,
       this.tpPill.element,
       this.suggestionCard.element,
       this.slPill.element,
@@ -182,7 +194,14 @@ export class WidgetRoot {
 
     this.dragManager.bind(TARGET_TP, this.tpPill.handleElement);
     this.dragManager.bind(TARGET_SL, this.slPill.handleElement);
-    this.dragManager.bind(TARGET_SUGGESTION, this.suggestionCard.handleElement);
+    // The card's own icon still carries the group id's offset (so it stays
+    // put if untouched), but dragging it now moves all three elements
+    // together as one rigid group — see DragManager.bindGroup.
+    this.dragManager.bindGroup(this.suggestionCard.handleElement, [
+      TARGET_TP,
+      TARGET_SL,
+      TARGET_SUGGESTION,
+    ]);
     // §P6t: same pointer-drag mechanics as pre-trade cosmetic repositioning
     // (§P3) — this listener only acts when a position is set, turning a
     // committed drag into a price-drag instead of a screen offset.
@@ -207,6 +226,8 @@ export class WidgetRoot {
       pinRight: true,
     });
 
+    this.anchorManager.onFrame((paneRect) => this.applyConnectorLine(paneRect));
+
     this.unsubscribeState = this.stateManager.subscribe((state) => {
       this.renderCollapseState(state.collapsed);
       this.onCollapsedChange?.(state.collapsed);
@@ -221,6 +242,8 @@ export class WidgetRoot {
     display(this.tpPill.element, !collapsed);
     display(this.slPill.element, !collapsed);
     display(this.suggestionCard.element, !collapsed);
+    display(this.connectorLineTp, !collapsed);
+    display(this.connectorLineSl, !collapsed);
     display(this.puck, collapsed);
   }
 
@@ -275,8 +298,13 @@ export class WidgetRoot {
         this.dragManager.hydrate(TARGET_SL, { dx: 0, dy: 0 });
       }
     }
+    const hadPosition = this.position !== null;
     this.position = merged;
     this.renderPills();
+    // The card's "Suggested"/"Position" label depends on this.position —
+    // only re-render it on an actual open/close transition, not on every
+    // poll while a position stays open (avoids redundant DOM writes).
+    if (hadPosition !== (merged !== null)) this.renderSuggestionCard();
   }
 
   private effectiveTpPrice(): number | null {
@@ -340,6 +368,7 @@ export class WidgetRoot {
       subLabel: this.suggestion.subLabel ?? null,
       tradeDisabled: this.suggestion.tradeDisabled ?? false,
       staleReason: this.suggestion.staleReason ?? null,
+      hasPosition: this.position !== null,
       onTrade: this.suggestion.onTrade,
       ...(this.suggestion.onTradeFocusChange
         ? { onTradeFocusChange: this.suggestion.onTradeFocusChange }
@@ -433,6 +462,58 @@ export class WidgetRoot {
       this.unsubscribeDragForManual = null;
       this.anchorManager.start();
     }
+  }
+  /**
+   * Two-tone vertical connector line (§P3 reference screenshot): a thin
+   * green segment from entry→TP and a red segment from entry→SL. Positioned
+   * each rAF frame via AnchorManager.onFrame so it stays perfectly joined
+   * to the pills/card without being its own AnchorTarget.
+   */
+  private applyConnectorLine(paneRect: PaneRectOrNull): void {
+    const tpPrice = this.effectiveTpPrice();
+    const pivotPrice = this.suggestion.livePrice();
+    const slPrice = this.effectiveSlPrice();
+
+    // The line stays attached to TP and SL as long as both of THOSE are
+    // known — a pivot (live price / card) that's temporarily unavailable
+    // must not tear the whole connector down, only fall back to splitting
+    // it at the midpoint instead of the real entry price.
+    if (paneRect === null || tpPrice === null || slPrice === null) {
+      this.connectorLineTp.classList.add('tp-positioned--hidden');
+      this.connectorLineSl.classList.add('tp-positioned--hidden');
+      return;
+    }
+
+    const tpY = this.bridge.priceToY(tpPrice);
+    const slY = this.bridge.priceToY(slPrice);
+    if (tpY === null || slY === null) {
+      this.connectorLineTp.classList.add('tp-positioned--hidden');
+      this.connectorLineSl.classList.add('tp-positioned--hidden');
+      return;
+    }
+    const pivotY = pivotPrice === null ? null : this.bridge.priceToY(pivotPrice);
+    const effectivePivotY = pivotY ?? (tpY + slY) / 2;
+
+    // Include any drag offsets so the line tracks a drag in progress
+    const tpDy = this.dragManager.getOffset(TARGET_TP).dy;
+    const pivotDy = this.dragManager.getOffset(TARGET_SUGGESTION).dy;
+    const slDy = this.dragManager.getOffset(TARGET_SL).dy;
+    const sharedDx = this.dragManager.getOffset(TARGET_SUGGESTION).dx;
+
+    const y1 = tpY + tpDy;
+    const yPivot = effectivePivotY + pivotDy;
+    const y2 = slY + slDy;
+    const x = paneRect.right - CONNECTOR_GUTTER_PX + sharedDx;
+
+    // TP segment: from min(y1, yPivot) to max(y1, yPivot)
+    this.connectorLineTp.classList.remove('tp-positioned--hidden');
+    this.connectorLineTp.style.transform = `translate3d(${x}px, ${Math.min(y1, yPivot)}px, 0)`;
+    this.connectorLineTp.style.height = `${Math.abs(yPivot - y1)}px`;
+
+    // SL segment: from min(yPivot, y2) to max(yPivot, y2)
+    this.connectorLineSl.classList.remove('tp-positioned--hidden');
+    this.connectorLineSl.style.transform = `translate3d(${x}px, ${Math.min(yPivot, y2)}px, 0)`;
+    this.connectorLineSl.style.height = `${Math.abs(y2 - yPivot)}px`;
   }
 
   private applyManualLayout(): void {

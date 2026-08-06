@@ -67,13 +67,18 @@ function main(): void {
     if (msg === null) return;
 
     if (msg.kind === 'init') {
-      // First init handshake wins for this page load — a single content
-      // script instance per frame (§R-P1's injection guard) means this
-      // should only ever fire once.
-      if (acceptedNonce === null) {
-        acceptedNonce = msg.nonce;
-        log.debug('accepted content-script nonce');
-      }
+      // The injection guard (§R-P1) keeps this to one content-script
+      // instance per frame per page load, but that ISOLATED-world instance
+      // legitimately creates a FRESH BridgeClient (new nonce) more than
+      // once without a page reload — on SPA navigation, on a capability
+      // probe giving up after repeated failures, on the popup's
+      // enable/disable toggle. Always adopt the latest nonce rather than
+      // locking to the first one ever seen: otherwise every request from a
+      // re-created bridge is silently rejected below (nonce mismatch),
+      // every call times out, the probe reports 'unavailable' forever, and
+      // the widget can never remount until the whole page is reloaded.
+      acceptedNonce = msg.nonce;
+      log.debug('accepted content-script nonce');
       return;
     }
 

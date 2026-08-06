@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Zing Trade</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <header class="panel__header">
+        <span class="panel__logo">⇄ Zing Trade</span>
+      </header>
+
+      <nav class="panel__tabs" role="tablist">
+        <button type="button" class="panel__tab panel__tab--active" id="tab-brokers" data-tab="brokers">
+          Connect broker
+        </button>
+        <button type="button" class="panel__tab" id="tab-strategy" data-tab="strategy">Strategy</button>
+      </nav>
+
+      <section class="panel__view" id="view-brokers">
+        <h1 class="panel__title">Connect your broker</h1>
+        <p class="panel__subtitle">Zing will overlay signals directly on their chart</p>
+        <div class="panel__broker-list" id="broker-list"></div>
+      </section>
+
+      <section class="panel__view" id="view-strategy" hidden>
+        <h1 class="panel__title">Strategy</h1>
+        <p class="panel__subtitle">Save the rules you trade by — more automation here soon.</p>
+
+        <form class="panel__strategy-form" id="strategy-form">
+          <input
+            type="text"
+            id="strategy-name"
+            class="panel__input"
+            placeholder="Strategy name"
+            required
+          />
+          <textarea
+            id="strategy-notes"
+            class="panel__textarea"
+            placeholder="Entry rules, risk per trade, notes…"
+            rows="3"
+          ></textarea>
+          <button type="submit" class="panel__button panel__button--primary">Add strategy</button>
+        </form>
+
+        <div class="panel__strategy-list" id="strategy-list"></div>
+      </section>
+    </main>
+
+    <!-- API key entry, shown over the broker list when "Open" is clicked on a not-connected broker -->
+    <div class="panel__modal" id="broker-modal" hidden>
+      <div class="panel__modal-card">
+        <h2 class="panel__modal-title" id="broker-modal-title">Connect</h2>
+        <p class="panel__modal-hint">
+          Stored locally in this browser only — never sent anywhere by this extension.
+        </p>
+        <form id="broker-form">
+          <input type="text" id="broker-api-key" class="panel__input" placeholder="API key" required />
+          <input
+            type="password"
+            id="broker-api-secret"
+            class="panel__input"
+            placeholder="API secret"
+            required
+          />
+          <div class="panel__modal-actions">
+            <button type="button" class="panel__button" id="broker-cancel">Cancel</button>
+            <button type="submit" class="panel__button panel__button--primary">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

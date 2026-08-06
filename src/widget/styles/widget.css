@@ -52,7 +52,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--tp-space-2);
-  padding: var(--tp-space-1) var(--tp-space-2);
+  padding: var(--tp-space-1) var(--tp-space-2) var(--tp-space-1) var(--tp-space-1);
   border-radius: var(--tp-radius-md);
   background: var(--tp-color-bg);
   backdrop-filter: var(--tp-blur);
@@ -115,17 +115,21 @@
   font-size: var(--tp-font-size-sm);
   font-weight: 700;
   letter-spacing: 0.04em;
-  opacity: 0.85;
+  line-height: 1;
+  color: #fff;
+  padding: 5px var(--tp-space-2);
+  border-radius: var(--tp-radius-sm);
 }
 .tp-pill--tp .tp-pill__label {
-  color: var(--tp-color-tp);
+  background: var(--tp-color-tp);
 }
 .tp-pill--sl .tp-pill__label {
-  color: var(--tp-color-sl);
+  background: var(--tp-color-sl);
 }
 
 .tp-pill__value {
   font-size: var(--tp-font-size-md);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   font-feature-settings: 'tnum' 1;
 }
@@ -134,17 +138,30 @@
 
 .tp-card {
   display: flex;
-  flex-direction: column;
-  gap: var(--tp-space-1);
+  align-items: center;
+  gap: var(--tp-space-2);
   padding: var(--tp-space-2) var(--tp-space-3);
+  padding-left: 20px; /* extra room for the arrow notch */
   border-radius: var(--tp-radius-lg);
   background: var(--tp-color-bg);
   backdrop-filter: var(--tp-blur);
   -webkit-backdrop-filter: var(--tp-blur);
-  border: 1px solid color-mix(in srgb, var(--tp-color-accent) 40%, var(--tp-color-border));
+  border: 1px solid color-mix(in srgb, var(--tp-color-accent) 60%, var(--tp-color-border));
   box-shadow: var(--tp-shadow-card);
   pointer-events: auto;
   min-width: 168px;
+  /* Centred on the connector line both ways, so the line runs through the
+     card's middle instead of hugging its right edge. */
+  translate: -50% -50%;
+  /* Left-pointing arrow notch (mirrored) — rounded corners sit on the
+     Trade-button side, the point sits on the icon side. */
+  clip-path: polygon(
+    12px 0,
+    100% 0,
+    100% 100%,
+    12px 100%,
+    0 50%
+  );
   transition:
     box-shadow var(--tp-duration-fast) var(--tp-easing),
     transform var(--tp-duration-fast) var(--tp-easing);
@@ -156,31 +173,54 @@
     0 0 20px var(--tp-color-accent-glow);
 }
 
-.tp-card__header {
+.tp-card__body {
   display: flex;
   align-items: center;
+  flex: 1;
+  min-width: 0;
   gap: var(--tp-space-2);
+}
+
+.tp-card__icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--tp-color-accent);
+  color: #1a1308;
+  font-size: 15px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.tp-card__icon:active {
+  cursor: grabbing;
+}
+
+.tp-card__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .tp-card__title {
   font-size: var(--tp-font-size-sm);
   font-weight: 700;
-  color: var(--tp-color-accent);
+  color: var(--tp-color-text-dim);
   letter-spacing: 0.03em;
-  flex: 1;
-}
-
-.tp-card__body {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--tp-space-3);
 }
 
 .tp-card__symbol {
   font-size: var(--tp-font-size-lg);
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .tp-card__symbol-sub {
@@ -194,11 +234,12 @@
   border: none;
   border-radius: var(--tp-radius-sm);
   padding: var(--tp-space-2) var(--tp-space-3);
-  background: var(--tp-color-accent);
-  color: #fff;
+  background: #fff;
+  color: #14161c;
   font-size: var(--tp-font-size-md);
   font-weight: 700;
   cursor: pointer;
+  flex: none;
   transition:
     filter var(--tp-duration-fast) var(--tp-easing),
     transform var(--tp-duration-fast) var(--tp-easing);
@@ -210,7 +251,7 @@
   transform: scale(0.97);
 }
 .tp-card__trade-btn:focus-visible {
-  outline: 2px solid #fff;
+  outline: 2px solid var(--tp-color-accent);
   outline-offset: 2px;
 }
 .tp-card__trade-btn:disabled {
@@ -230,6 +271,8 @@
 
 .tp-card__confirm {
   display: flex;
+  flex: 1;
+  min-width: 0;
   flex-direction: column;
   gap: var(--tp-space-2);
 }
@@ -372,4 +415,18 @@
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+/* ---------- Two-tone vertical connector line (§P3 reference screenshot) ---------- */
+
+.tp-connector-line {
+  width: 2px;
+  border-radius: 1px;
+  pointer-events: none;
+}
+.tp-connector-line--tp {
+  background: color-mix(in srgb, var(--tp-color-tp) 65%, transparent);
+}
+.tp-connector-line--sl {
+  background: color-mix(in srgb, var(--tp-color-sl) 65%, transparent);
 }

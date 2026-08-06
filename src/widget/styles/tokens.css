@@ -4,25 +4,27 @@
  * Shadow DOM's own stylesheet — never leaks into the host page (§7.4).
  */
 :host {
-  --tp-color-bg: rgba(20, 22, 34, 0.82);
-  --tp-color-bg-solid: #14161f;
-  --tp-color-border: rgba(255, 255, 255, 0.1);
-  --tp-color-text: #e9ecf5;
-  --tp-color-text-dim: #9aa1b8;
-  --tp-color-tp: #4caf7a;
-  --tp-color-tp-glow: rgba(76, 175, 122, 0.45);
-  --tp-color-sl: #e0555f;
-  --tp-color-sl-glow: rgba(224, 85, 95, 0.45);
-  --tp-color-accent: #5b8cff;
-  --tp-color-accent-glow: rgba(91, 140, 255, 0.45);
+  /* Dark broker-terminal theme (matches the reference chart overlay: near-black
+     cards/pills with solid colour badges and an amber-bordered suggestion card). */
+  --tp-color-bg: rgba(17, 19, 24, 0.96);
+  --tp-color-bg-solid: #111318;
+  --tp-color-border: rgba(255, 255, 255, 0.12);
+  --tp-color-text: #f2f3f5;
+  --tp-color-text-dim: #9a9ea8;
+  --tp-color-tp: #1f9254;
+  --tp-color-tp-glow: rgba(31, 146, 84, 0.45);
+  --tp-color-sl: #e0333f;
+  --tp-color-sl-glow: rgba(224, 51, 63, 0.45);
+  --tp-color-accent: #e0a537;
+  --tp-color-accent-glow: rgba(224, 165, 55, 0.4);
   --tp-color-warning-bg: #7a1f24;
   --tp-color-warning-text: #ffe4e6;
   --tp-color-demo-bg: #8a5a10;
   --tp-color-demo-text: #fff3d6;
 
   --tp-radius-sm: 6px;
-  --tp-radius-md: 10px;
-  --tp-radius-lg: 14px;
+  --tp-radius-md: 999px;
+  --tp-radius-lg: 16px;
 
   --tp-space-1: 4px;
   --tp-space-2: 8px;
@@ -35,8 +37,8 @@
   --tp-font-size-md: 13px;
   --tp-font-size-lg: 15px;
 
-  --tp-shadow-card: 0 4px 24px rgba(0, 0, 0, 0.35);
-  --tp-blur: blur(10px);
+  --tp-shadow-card: 0 2px 12px rgba(0, 0, 0, 0.45);
+  --tp-blur: none;
 
   --tp-duration-fast: 120ms;
   --tp-duration-medium: 300ms;

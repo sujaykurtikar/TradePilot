@@ -36,6 +36,10 @@ interface TradePilotManifest {
     type: 'module';
   };
   content_scripts: ContentScriptEntry[];
+  side_panel: {
+    default_path: string;
+  };
+  web_accessible_resources: Array<{ resources: string[]; matches: string[] }>;
 }
 
 // Our own backend — see IMPLEMENTATION_PLAN.md §10 Q3. Defaults to
@@ -68,7 +72,7 @@ const manifest: TradePilotManifest = {
   // 'alarms' is P5's service-worker keepalive (background/index.ts) —
   // MV3 workers can be terminated after ~30s idle; a periodic alarm is
   // the documented way to get woken back up reliably.
-  permissions: ['storage', 'scripting', 'activeTab', 'alarms'],
+  permissions: ['storage', 'scripting', 'activeTab', 'alarms', 'sidePanel'],
   host_permissions: [
     'https://*.tradingview.com/*',
     'https://*.kotaksecurities.com/*',
@@ -101,7 +105,7 @@ const manifest: TradePilotManifest = {
     // exercised until P7 confirms the content script actually lands in the
     // innermost frame rather than the middle static-HTML one.
     {
-      matches: ['https://trade.kotakneo.com/*', 'blob:https://trade.kotakneo.com/*'],
+      matches: ['https://trade.kotakneo.com/*'],
       all_frames: true,
       match_origin_as_fallback: true,
       world: 'ISOLATED',
@@ -109,12 +113,28 @@ const manifest: TradePilotManifest = {
       run_at: 'document_idle',
     },
     {
-      matches: ['https://trade.kotakneo.com/*', 'blob:https://trade.kotakneo.com/*'],
+      matches: ['https://trade.kotakneo.com/*'],
       all_frames: true,
       match_origin_as_fallback: true,
       world: 'MAIN',
       js: ['bridge.js'],
       run_at: 'document_idle',
+    },
+  ],
+  side_panel: {
+    default_path: 'sidepanel.html',
+  },
+  // ShadowHost fetches these at runtime via chrome.runtime.getURL (§P3) — that
+  // fetch carries the host page's origin as initiator, so without this
+  // declaration Chrome blocks it and the widget silently renders unstyled.
+  web_accessible_resources: [
+    {
+      resources: ['styles/*.css'],
+      matches: [
+        'https://www.tradingview.com/*',
+        'https://trade.kotakneo.com/*',
+        'https://*.kotaksecurities.com/*',
+      ],
     },
   ],
 };

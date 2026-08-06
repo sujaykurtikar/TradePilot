@@ -58,6 +58,13 @@ const entries = [
     bundle: true,
     target: 'chrome111',
   },
+  {
+    entryPoints: [path.join(root, 'sidepanel/sidepanel.ts')],
+    outfile: path.join(dist, 'sidepanel.js'),
+    format: 'esm',
+    bundle: true,
+    target: 'chrome111',
+  },
 ];
 
 const common = {
@@ -112,6 +119,16 @@ async function copyStatic() {
   const popupCssSrc = path.join(root, 'popup/popup.css');
   if (existsSync(popupCssSrc)) {
     await cp(popupCssSrc, path.join(dist, 'popup.css'));
+  }
+
+  const sidepanelHtmlSrc = path.join(root, 'sidepanel/sidepanel.html');
+  if (existsSync(sidepanelHtmlSrc)) {
+    await cp(sidepanelHtmlSrc, path.join(dist, 'sidepanel.html'));
+  }
+
+  const sidepanelCssSrc = path.join(root, 'sidepanel/sidepanel.css');
+  if (existsSync(sidepanelCssSrc)) {
+    await cp(sidepanelCssSrc, path.join(dist, 'sidepanel.css'));
   }
 
   const iconsSrc = path.join(root, 'icons');

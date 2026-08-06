@@ -38,6 +38,7 @@ async function init(): Promise<void> {
   const apiStatusEl = byId<HTMLSpanElement>('api-status');
   const resetButton = byId<HTMLButtonElement>('reset-position');
   const hiddenReasonEl = byId<HTMLParagraphElement>('widget-hidden-reason');
+  const openSidePanelButton = byId<HTMLButtonElement>('open-sidepanel');
 
   versionEl.textContent = `v${chrome.runtime.getManifest().version}`;
 
@@ -59,6 +60,14 @@ async function init(): Promise<void> {
     setTimeout(() => {
       resetButton.textContent = 'Reset widget position';
     }, 1200);
+  });
+
+  openSidePanelButton.addEventListener('click', () => {
+    void (async () => {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.windowId === undefined) return;
+      await chrome.sidePanel.open({ windowId: tab.windowId });
+    })();
   });
 
   const status = await sendToBackground<StatusResponse>({ type: 'tradepilot/get-status' });

@@ -48,11 +48,14 @@ interface LastApplied {
   visible: boolean;
 }
 
+export type PaneRectOrNull = ReturnType<ChartBridge['paneRect']>;
+
 export class AnchorManager {
   private readonly bridge: ChartBridge;
   private readonly dragManager: DragManager;
   private readonly targets = new Map<string, AnchorTarget>();
   private readonly lastApplied = new Map<string, LastApplied>();
+  private readonly frameListeners = new Set<(paneRect: PaneRectOrNull) => void>();
   private rafHandle: number | null = null;
   private disposed = false;
 
@@ -68,6 +71,12 @@ export class AnchorManager {
   removeTarget(id: string): void {
     this.targets.delete(id);
     this.lastApplied.delete(id);
+  }
+
+  /** Subscribe to the per-frame paneRect, for elements (e.g. the connector line) that derive their own position instead of registering as an AnchorTarget. Returns an unsubscribe function. */
+  onFrame(listener: (paneRect: PaneRectOrNull) => void): () => void {
+    this.frameListeners.add(listener);
+    return () => this.frameListeners.delete(listener);
   }
 
   start(): void {
@@ -100,6 +109,10 @@ export class AnchorManager {
 
     for (const target of this.targets.values()) {
       this.applyTarget(target, paneRect);
+    }
+
+    for (const listener of this.frameListeners) {
+      listener(paneRect);
     }
   }
 
@@ -162,6 +175,7 @@ export class AnchorManager {
     this.stop();
     this.targets.clear();
     this.lastApplied.clear();
+    this.frameListeners.clear();
   }
 }
 

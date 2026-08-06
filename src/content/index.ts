@@ -26,12 +26,37 @@ bootstrap.start().catch((error: unknown) => {
 // found. chrome.runtime provides no direct "extension disabled" content-
 // script event, but the port disconnecting is the standard signal that
 // the extension context has gone away (disable, reload, or uninstall).
-try {
-  const port = chrome.runtime.connect({ name: 'tradepilot-content-lifecycle' });
-  port.onDisconnect.addListener(() => {
-    log.info('extension context invalidated — tearing down');
-    bootstrap.destroy();
-  });
-} catch (error) {
-  log.debug('could not establish lifecycle port (non-fatal)', { error: String(error) });
+//
+// Under MV3 the background service worker is ephemeral — Chrome kills it
+// after ~30s idle and respawns it on demand — and that routine recycle
+// disconnects this port too, even though the extension is still very much
+// enabled. Only chrome.runtime.id actually going away means real
+// invalidation; a disconnect while it's still present is just the worker
+// recycling, so reconnect and keep watching instead of tearing the widget
+// down (that reconnect-blind version is why the widget used to die on the
+// first SW recycle and need a full page reload to come back).
+function isExtensionContextValid(): boolean {
+  try {
+    return typeof chrome !== 'undefined' && !!chrome.runtime && !!chrome.runtime.id;
+  } catch {
+    return false;
+  }
 }
+
+function watchExtensionLifecycle(): void {
+  try {
+    const port = chrome.runtime.connect({ name: 'tradepilot-content-lifecycle' });
+    port.onDisconnect.addListener(() => {
+      if (isExtensionContextValid()) {
+        log.debug('lifecycle port disconnected (service worker recycle) — reconnecting');
+        watchExtensionLifecycle();
+        return;
+      }
+      log.info('extension context invalidated — tearing down');
+      bootstrap.destroy();
+    });
+  } catch (error) {
+    log.debug('could not establish lifecycle port (non-fatal)', { error: String(error) });
+  }
+}
+watchExtensionLifecycle();
