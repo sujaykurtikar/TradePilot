@@ -51,10 +51,36 @@ export const KOTAK_NEO_CONFIG: InternalApiHostConfig = {
   },
 };
 
+const KOTAK_ORIGIN = 'https://trade.kotakneo.com';
+
+/**
+ * P7: identifies which frame (of the three the manifest injects into,
+ * §4.2) is actually the chart-hosting one.
+ *
+ * A `blob:` URL's `.hostname` is ALWAYS the empty string — it has no
+ * hierarchical authority component, unlike an http(s) URL. Verified with
+ * Node's URL parser: `new URL('blob:https://trade.kotakneo.com/<uuid>')`
+ * gives `hostname: ''`, `protocol: 'blob:'`, `origin:
+ * 'https://trade.kotakneo.com'`. A hostname-only check (what this
+ * function originally did) therefore matches Kotak's outer document and
+ * middle static-HTML iframe — the two frames WITHOUT a chart — and never
+ * matches the innermost blob iframe, which is exactly backwards: the
+ * widget would try to bootstrap in the two frames that can never satisfy
+ * it and time out, and never even attempt the one that would work.
+ *
+ * The fix: `origin` (not `hostname`) is what a blob URL correctly
+ * inherits from its creating context (also why the postMessage protocol's
+ * `event.origin === location.origin` check in protocol.ts/§4.2 works
+ * inside that frame unmodified) — so Kotak's match requires BOTH
+ * `protocol === 'blob:'` (this is specifically the innermost frame, not
+ * either outer one) AND `origin === KOTAK_ORIGIN` (this blob belongs to
+ * Kotak, not some other site's blob: URL, which shares the `blob:`
+ * protocol but never Kotak's origin).
+ */
 export function resolveHostConfigForLocation(
   loc: Location = window.location,
 ): InternalApiHostConfig | null {
   if (loc.hostname === 'www.tradingview.com') return TRADINGVIEW_SITE_CONFIG;
-  if (loc.hostname === 'trade.kotakneo.com') return KOTAK_NEO_CONFIG;
+  if (loc.protocol === 'blob:' && loc.origin === KOTAK_ORIGIN) return KOTAK_NEO_CONFIG;
   return null;
 }
