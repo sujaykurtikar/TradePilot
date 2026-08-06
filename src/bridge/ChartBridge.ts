@@ -32,6 +32,16 @@ export interface LastBar {
   readonly close: number;
 }
 
+/** Plain-object mirror of DOMRect (postMessage-cloneable; a real DOMRect isn't structured-cloneable in all engines). */
+export interface PaneRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly right: number;
+  readonly bottom: number;
+}
+
 export type ChartChangeReason = 'range' | 'symbol' | 'interval' | 'resize';
 
 export interface ChartBridge {
@@ -44,5 +54,15 @@ export interface ChartBridge {
   timeToX(time: number): number | null;
   lastBar(): LastBar | null;
   symbol(): string | null;
+  /**
+   * The chart pane's viewport rect. Not in the plan's original §5.2
+   * sketch, but its own §P4 anchoring pseudocode reads `paneRect.right`
+   * directly for right-pinned elements (the Suggested card riding the
+   * live price at the pane's edge, Zing-style) — so it has to come from
+   * somewhere. Added here rather than invented ad hoc in the widget layer,
+   * since pane geometry is exactly the kind of vendor-internal detail the
+   * bridge exists to own.
+   */
+  paneRect(): PaneRect | null;
   onChange(cb: (reason: ChartChangeReason) => void): () => void;
 }

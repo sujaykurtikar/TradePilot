@@ -53,6 +53,8 @@ function main(): void {
         return bridge.lastBar();
       case 'symbol':
         return bridge.symbol();
+      case 'paneRect':
+        return bridge.paneRect();
       default: {
         const _exhaustive: never = method;
         throw new Error(`unknown bridge method: ${String(_exhaustive)}`);

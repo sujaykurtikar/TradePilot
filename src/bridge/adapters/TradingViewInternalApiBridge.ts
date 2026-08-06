@@ -1,4 +1,12 @@
-import type { ChartBridge, ChartBridgeId, ChartChangeReason, LastBar, ProbeCheckResult, ProbeResult } from '../ChartBridge';
+import type {
+  ChartBridge,
+  ChartBridgeId,
+  ChartChangeReason,
+  LastBar,
+  PaneRect,
+  ProbeCheckResult,
+  ProbeResult,
+} from '../ChartBridge';
 import type { InternalApiHostConfig } from './hostConfigs';
 import { getLogger } from '../../utils/logger';
 
@@ -117,17 +125,23 @@ export class TradingViewInternalApiBridge implements ChartBridge {
     });
   }
 
-  private paneRect(): DOMRect | null {
+  private resolvePaneRect(): DOMRect | null {
     const handles = this.resolve();
     if (handles == null) return null;
     return guarded(() => handles.paneWidget.canvasElement?.()?.getBoundingClientRect?.() ?? null);
+  }
+
+  paneRect(): PaneRect | null {
+    const rect = this.resolvePaneRect();
+    if (rect == null) return null;
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, right: rect.right, bottom: rect.bottom };
   }
 
   priceToY(price: number): number | null {
     if (!Number.isFinite(price)) return null;
     const handles = this.resolve();
     if (handles == null) return null;
-    const rect = this.paneRect();
+    const rect = this.resolvePaneRect();
     const coord = guarded(() => handles.priceScale.priceToCoordinate?.(price));
     if (coord == null || !Number.isFinite(coord)) return null;
     if (rect == null) return null;
@@ -141,7 +155,7 @@ export class TradingViewInternalApiBridge implements ChartBridge {
     if (!Number.isFinite(y)) return null;
     const handles = this.resolve();
     if (handles == null) return null;
-    const rect = this.paneRect();
+    const rect = this.resolvePaneRect();
     if (rect == null) return null;
     const localY = y - rect.y;
     const price = guarded(() => handles.priceScale.coordinateToPrice?.(localY));
@@ -153,7 +167,7 @@ export class TradingViewInternalApiBridge implements ChartBridge {
     if (!Number.isFinite(time)) return null;
     const handles = this.resolve();
     if (handles == null) return null;
-    const rect = this.paneRect();
+    const rect = this.resolvePaneRect();
     if (rect == null) return null;
 
     const index = guarded(() => {
@@ -227,7 +241,7 @@ export class TradingViewInternalApiBridge implements ChartBridge {
 
     if (handles !== null) {
       const bar = this.lastBar();
-      const rect = this.paneRect();
+      const rect = this.resolvePaneRect();
 
       const yFromPrice = bar !== null ? this.priceToY(bar.close) : null;
       const priceToYInPane =
@@ -299,7 +313,7 @@ export class TradingViewInternalApiBridge implements ChartBridge {
     this.subscribedChart = chart;
 
     if (typeof ResizeObserver !== 'undefined') {
-      const rect = this.paneRect();
+      const rect = this.resolvePaneRect();
       const canvas = guarded(() => handles.paneWidget.canvasElement?.());
       if (canvas instanceof Element) {
         this.resizeObserver = new ResizeObserver(() => this.boundHandlers.resize());

@@ -24,7 +24,7 @@
  * must not leave the widget showing a frozen last-good coordinate forever.
  */
 
-import type { ChartBridge, ChartBridgeId, ChartChangeReason, LastBar, ProbeResult } from './ChartBridge';
+import type { ChartBridge, ChartBridgeId, ChartChangeReason, LastBar, PaneRect, ProbeResult } from './ChartBridge';
 import { generateSessionNonce } from '../utils/env';
 import {
   PROTOCOL_NAMESPACE,
@@ -177,6 +177,10 @@ export class BridgeClient implements ChartBridge {
 
   symbol(): string | null {
     return this.syncCall<string>('symbol', []);
+  }
+
+  paneRect(): PaneRect | null {
+    return this.syncCall<PaneRect>('paneRect', []);
   }
 
   onChange(cb: (reason: ChartChangeReason) => void): () => void {

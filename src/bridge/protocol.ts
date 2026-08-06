@@ -29,7 +29,8 @@ export type BridgeMethodName =
   | 'yToPrice'
   | 'timeToX'
   | 'lastBar'
-  | 'symbol';
+  | 'symbol'
+  | 'paneRect';
 
 interface EnvelopeBase {
   readonly __ns: typeof PROTOCOL_NAMESPACE;
