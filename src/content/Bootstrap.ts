@@ -280,8 +280,22 @@ export class Bootstrap {
     // §5.4: the capability probe runs before anything depends on the
     // bridge, i.e. right here — before the widget mounts, not after.
     const probe = new CapabilityProbe(bridge);
-    const initialState = await probe.runOnce();
+    let initialState = await probe.runOnce();
     if (this.disposed || token !== this.runToken) return;
+    // bridge.isAvailable() (waitForChartReady, above) can flip true a tick
+    // before the pane element actually has a laid-out rect — e.g. right
+    // after an SPA nav or a tab regaining visibility — which fails the
+    // probe's priceToY/timeToX checks as "outside pane rect" even though
+    // the chart is genuinely fine a moment later. One short retry absorbs
+    // that race instead of mounting in manual mode (visible line/pill
+    // detachment) for the ~30s until the next periodic re-probe self-heals.
+    if (initialState.mode === 'manual') {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (this.disposed || token !== this.runToken) return;
+      const retryState = await probe.runOnce();
+      if (this.disposed || token !== this.runToken) return;
+      if (retryState.mode === 'anchored') initialState = retryState;
+    }
     if (initialState.mode === 'unavailable') {
       log.error('capability probe failed — widget will not mount (host page left untouched)', {
         hostId: hostConfig.id,

@@ -210,6 +210,14 @@ export class WidgetRoot {
     // (§P3) — this listener only acts when a position is set, turning a
     // committed drag into a price-drag instead of a screen offset.
     this.dragManager.onDragEnd((id, offset) => this.handleLevelDragEnd(id, offset));
+    // Live price-tag update on every pointermove during a TP/SL drag, not
+    // just at the end — see displayedPrice()'s doc comment. This is purely
+    // a label readout; it does not touch AnchorManager's positioning math
+    // (that still runs off effectiveTpPrice()/effectiveSlPrice() directly),
+    // so it can't affect the connector line or the pill's actual position.
+    this.dragManager.onChange((id) => {
+      if (id === TARGET_TP || id === TARGET_SL) this.renderPills();
+    });
 
     this.anchorManager.addTarget({
       id: TARGET_TP,
@@ -327,15 +335,30 @@ export class WidgetRoot {
       : this.position.sl;
   }
 
+  /**
+   * While a TP/SL pill is being dragged, its displayed number should track
+   * the price under the pointer right now — same as TradingView's own
+   * price-line drag tag — so the user can eyeball where they're trailing
+   * the level to before releasing. Falls back to the pre-drag price if the
+   * bridge can't resolve a coordinate this frame (§7.1: never guess).
+   */
+  private displayedPrice(targetId: string, basePrice: number | null): number | null {
+    if (!this.dragManager.isDragging(targetId) || basePrice === null) return basePrice;
+    const baseY = this.bridge.priceToY(basePrice);
+    if (baseY === null) return basePrice;
+    const dy = this.dragManager.getOffset(targetId).dy;
+    return this.bridge.yToPrice(baseY + dy) ?? basePrice;
+  }
+
   private renderPills(): void {
     this.tpPill.update({
       variant: 'tp',
-      price: this.effectiveTpPrice(),
+      price: this.displayedPrice(TARGET_TP, this.effectiveTpPrice()),
       pending: this.position?.tpState.kind === 'pending',
     });
     this.slPill.update({
       variant: 'sl',
-      price: this.effectiveSlPrice(),
+      price: this.displayedPrice(TARGET_SL, this.effectiveSlPrice()),
       pending: this.position?.slState.kind === 'pending',
     });
     // Anchored mode's visibility comes from AnchorManager reading these
