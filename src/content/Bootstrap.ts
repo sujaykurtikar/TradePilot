@@ -97,9 +97,16 @@ function reportTabVisibility(): void {
     type: 'tradepilot/tab-visibility',
     visible: document.visibilityState === 'visible',
   };
-  chrome.runtime.sendMessage(message).catch((error: unknown) => {
+  try {
+    chrome.runtime.sendMessage(message).catch((error: unknown) => {
+      log.debug('tab-visibility report failed (non-fatal)', { error: String(error) });
+    });
+  } catch (error: unknown) {
+    // chrome.runtime.sendMessage throws synchronously (rather than rejecting)
+    // when the extension context has been invalidated, e.g. after an
+    // extension reload/update while this content script is still injected.
     log.debug('tab-visibility report failed (non-fatal)', { error: String(error) });
-  });
+  }
 }
 
 export class Bootstrap {

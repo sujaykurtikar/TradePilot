@@ -40,6 +40,16 @@ export interface AnchorTarget {
    */
   getTime?: () => number | null;
   readonly pinRight?: boolean;
+  /**
+   * Use this OTHER target's horizontal offset instead of this target's own
+   * — the TP/SL pills use it to always mirror the Suggested card's dx.
+   * Solo TP/SL drags are vertical-only (DragManager's lockAxis), so a
+   * pill's own dx should never legitimately differ from the card's; this
+   * makes that true unconditionally, self-healing any stray per-pill
+   * horizontal offset already sitting in chrome.storage from before that
+   * lock existed, rather than requiring a one-off storage migration.
+   */
+  readonly mirrorOffsetXFrom?: string;
 }
 
 interface LastApplied {
@@ -144,7 +154,11 @@ export class AnchorManager {
     }
 
     const offset = this.dragManager.getOffset(target.id);
-    const finalX = x + offset.dx;
+    const dx =
+      target.mirrorOffsetXFrom !== undefined
+        ? this.dragManager.getOffset(target.mirrorOffsetXFrom).dx
+        : offset.dx;
+    const finalX = x + dx;
     const finalY = y + offset.dy;
 
     const last = this.lastApplied.get(target.id);

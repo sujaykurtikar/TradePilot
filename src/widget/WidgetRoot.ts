@@ -192,8 +192,12 @@ export class WidgetRoot {
     );
     if (this.demoBadge) this.host.layer.appendChild(this.demoBadge);
 
-    this.dragManager.bind(TARGET_TP, this.tpPill.handleElement);
-    this.dragManager.bind(TARGET_SL, this.slPill.handleElement);
+    // Solo TP/SL drags ride the price axis — horizontal movement would
+    // just detach the pill from the connector line for no reason, so it's
+    // locked to vertical-only. The group drag below (via the card's icon)
+    // is unrestricted.
+    this.dragManager.bind(TARGET_TP, this.tpPill.handleElement, { lockAxis: 'x' });
+    this.dragManager.bind(TARGET_SL, this.slPill.handleElement, { lockAxis: 'x' });
     // The card's own icon still carries the group id's offset (so it stays
     // put if untouched), but dragging it now moves all three elements
     // together as one rigid group — see DragManager.bindGroup.
@@ -212,12 +216,14 @@ export class WidgetRoot {
       element: this.tpPill.element,
       getPrice: () => this.effectiveTpPrice(),
       pinRight: true,
+      mirrorOffsetXFrom: TARGET_SUGGESTION,
     });
     this.anchorManager.addTarget({
       id: TARGET_SL,
       element: this.slPill.element,
       getPrice: () => this.effectiveSlPrice(),
       pinRight: true,
+      mirrorOffsetXFrom: TARGET_SUGGESTION,
     });
     this.anchorManager.addTarget({
       id: TARGET_SUGGESTION,

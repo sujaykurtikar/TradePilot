@@ -44,13 +44,14 @@ export function createLevelPill(initial: LevelPillProps): LevelPillComponent {
   let closeBtn: ReturnType<typeof createIconButton> | null = null;
 
   function render(props: LevelPillProps): void {
-    root.className = [
-      'tp-pill',
-      `tp-pill--${props.variant}`,
-      props.pending ? 'tp-pill--pending' : '',
-    ]
-      .filter(Boolean)
-      .join(' ');
+    // Toggle only the visual state classes here — `root` also carries
+    // externally-managed classes (tp-positioned, tp-mount-animate) that
+    // AnchorManager's positioning relies on; overwriting className wholesale
+    // would silently strip those and break the pill's anchoring.
+    root.classList.add('tp-pill');
+    root.classList.toggle('tp-pill--tp', props.variant === 'tp');
+    root.classList.toggle('tp-pill--sl', props.variant === 'sl');
+    root.classList.toggle('tp-pill--pending', props.pending === true);
     label.textContent = props.variant.toUpperCase();
     value.textContent = props.price === null ? '—' : formatPrice(props.price);
     root.setAttribute(

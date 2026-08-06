@@ -64,11 +64,21 @@ export class DragManager {
     return () => this.dragEndListeners.delete(cb);
   }
 
-  /** Wires a drag handle element to update `elementId`'s offset live during drag. */
-  bind(elementId: string, handleElement: HTMLElement): void {
+  /**
+   * Wires a drag handle element to update `elementId`'s offset live during
+   * drag. `lockAxis: 'x'` pins the horizontal offset at 0 — used for the
+   * TP/SL pills, which ride the price axis and must only move vertically
+   * when dragged on their own (dragging the group via the card's icon is
+   * unrestricted; only a solo pill drag is axis-locked).
+   */
+  bind(elementId: string, handleElement: HTMLElement, options?: { lockAxis?: 'x' | 'y' }): void {
+    const lockAxis = options?.lockAxis;
     const applyDelta = (delta: DragDelta): Offset => {
       const start = this.dragStartOffsets.get(elementId) ?? ZERO_OFFSET;
-      return { dx: start.dx + delta.dx, dy: start.dy + delta.dy };
+      return {
+        dx: lockAxis === 'x' ? start.dx : start.dx + delta.dx,
+        dy: lockAxis === 'y' ? start.dy : start.dy + delta.dy,
+      };
     };
 
     const handle = attachDragHandle(handleElement, {
@@ -86,7 +96,10 @@ export class DragManager {
       },
       onKeyboardNudge: (delta) => {
         const current = this.getOffset(elementId);
-        const offset = { dx: current.dx + delta.dx, dy: current.dy + delta.dy };
+        const offset = {
+          dx: lockAxis === 'x' ? current.dx : current.dx + delta.dx,
+          dy: lockAxis === 'y' ? current.dy : current.dy + delta.dy,
+        };
         this.setOffset(elementId, offset);
         for (const cb of this.dragEndListeners) cb(elementId, offset);
       },

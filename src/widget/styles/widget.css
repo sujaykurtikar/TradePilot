@@ -60,6 +60,11 @@
   border: 1px solid var(--tp-color-border);
   box-shadow: var(--tp-shadow-card);
   pointer-events: auto;
+  /* Centred on the connector line's anchor point both ways — horizontally
+     so the line runs through the pill's middle instead of sitting off to
+     one side, vertically so it doesn't just touch the top edge — same
+     centring the Suggested card uses. */
+  translate: -50% -50%;
   transition:
     box-shadow var(--tp-duration-fast) var(--tp-easing),
     transform var(--tp-duration-fast) var(--tp-easing);
