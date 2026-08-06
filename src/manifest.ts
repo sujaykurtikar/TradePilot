@@ -65,7 +65,10 @@ const manifest: TradePilotManifest = {
     '48': 'icons/48.png',
     '128': 'icons/128.png',
   },
-  permissions: ['storage', 'scripting', 'activeTab'],
+  // 'alarms' is P5's service-worker keepalive (background/index.ts) —
+  // MV3 workers can be terminated after ~30s idle; a periodic alarm is
+  // the documented way to get woken back up reliably.
+  permissions: ['storage', 'scripting', 'activeTab', 'alarms'],
   host_permissions: [
     'https://*.tradingview.com/*',
     'https://*.kotaksecurities.com/*',

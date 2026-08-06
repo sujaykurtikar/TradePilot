@@ -12,18 +12,14 @@ import type {
   TradePilotRequest,
 } from '../core/messaging/messages';
 import type { StorageManager } from '../core/storage/StorageManager';
+import type { TabRegistry } from './TabRegistry';
 import { getLogger } from '../utils/logger';
 
 const log = getLogger('background:message-router');
 
 export interface MessageRouterDeps {
   readonly storage: StorageManager;
-  /**
-   * Day-1: no backend polling exists yet (that's P5), so this always
-   * resolves 'not-checked' — an honest state, not a fabricated
-   * "reachable" (§7.1's ranking: correct > visibly absent > ... > never
-   * silently wrong). P5 replaces this with ApiClient's real reachability.
-   */
+  readonly tabRegistry: TabRegistry;
   readonly getApiStatus: () => ApiReachability;
 }
 
@@ -38,7 +34,7 @@ async function handleGetStatus(deps: MessageRouterDeps): Promise<StatusResponse>
 }
 
 export function registerMessageRouter(deps: MessageRouterDeps): void {
-  chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
     if (!isTradePilotRequest(message)) {
       log.debug('ignoring unrecognized message', { message });
       return false; // no async response coming
@@ -54,9 +50,16 @@ export function registerMessageRouter(deps: MessageRouterDeps): void {
             sendResponse(null);
           });
         return true; // keep the message channel open for the async sendResponse
+      case 'tradepilot/tab-visibility': {
+        const tabId = sender.tab?.id;
+        if (tabId !== undefined) {
+          deps.tabRegistry.setVisibility(tabId, req.visible);
+        }
+        return false; // no response expected
+      }
       default: {
-        const _exhaustive: never = req.type;
-        log.warn('unhandled request type', { type: _exhaustive });
+        const _exhaustive: never = req;
+        log.warn('unhandled request type', { request: _exhaustive });
         return false;
       }
     }

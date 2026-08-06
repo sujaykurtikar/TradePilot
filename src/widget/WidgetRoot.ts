@@ -223,6 +223,18 @@ export class WidgetRoot {
   }
 
   /**
+   * Fully hides the widget layer — distinct from the user-driven
+   * collapse-to-puck state (StateManager), which persists and is the
+   * user's own choice. This is for a degradation case with no user
+   * choice involved: §R-P5 "Symbol unmapped: widget hidden with a reason
+   * in the popup." Toggling this does not touch collapse state, so
+   * un-hiding restores whatever collapse state the user had.
+   */
+  setHidden(hidden: boolean): void {
+    this.host.layer.style.display = hidden ? 'none' : '';
+  }
+
+  /**
    * §R-P2's degradation ladder, applied live. Reversible in both
    * directions — a later probe recovering from 'manual' back to
    * 'anchored' resumes the SAME AnchorManager targets (never re-created),

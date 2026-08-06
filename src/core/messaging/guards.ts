@@ -6,7 +6,12 @@
  * shape without checking.
  */
 
-import type { GetStatusRequest, TradePilotRequest } from './messages';
+import type {
+  DataUpdateMessage,
+  GetStatusRequest,
+  TabVisibilityMessage,
+  TradePilotRequest,
+} from './messages';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -16,6 +21,19 @@ export function isGetStatusRequest(value: unknown): value is GetStatusRequest {
   return isRecord(value) && value.type === 'tradepilot/get-status';
 }
 
+export function isTabVisibilityMessage(value: unknown): value is TabVisibilityMessage {
+  return (
+    isRecord(value) &&
+    value.type === 'tradepilot/tab-visibility' &&
+    typeof value.visible === 'boolean'
+  );
+}
+
 export function isTradePilotRequest(value: unknown): value is TradePilotRequest {
-  return isGetStatusRequest(value);
+  return isGetStatusRequest(value) || isTabVisibilityMessage(value);
+}
+
+/** Loose on purpose — the snapshot's internal shape is trusted because WE produced it in the background (mapChartState/mapRecommend already guarded it on the way in); this just confirms the envelope. */
+export function isDataUpdateMessage(value: unknown): value is DataUpdateMessage {
+  return isRecord(value) && value.type === 'tradepilot/data-update' && isRecord(value.snapshot);
 }

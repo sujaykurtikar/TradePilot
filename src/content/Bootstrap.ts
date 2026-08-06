@@ -11,8 +11,9 @@
 
 import { createBridgeClient, type BridgeClient } from '../bridge/BridgeClient';
 import { resolveHostConfigForLocation } from '../bridge/adapters/hostConfigs';
+import type { InternalApiHostConfig } from '../bridge/adapters/hostConfigs';
 import { CapabilityProbe, type DegradationState } from '../bridge/CapabilityProbe';
-import { WidgetRoot } from '../widget/WidgetRoot';
+import { WidgetRoot, type WidgetSuggestionData } from '../widget/WidgetRoot';
 import type { Offset } from '../widget/managers/DragManager';
 import {
   buildDemoSuggestionConfig,
@@ -24,6 +25,9 @@ import { SpaNavigationObserver } from './SpaNavigationObserver';
 import { markInjected, shouldInject, clearInjectedFlag } from './InjectionGuard';
 import { StorageManager } from '../core/storage/StorageManager';
 import type { StorageSchema } from '../core/storage/schema';
+import { isDataUpdateMessage } from '../core/messaging/guards';
+import type { TabVisibilityMessage } from '../core/messaging/messages';
+import type { MarketDataSnapshot } from '../core/api/types';
 import { getLogger } from '../utils/logger';
 
 const log = getLogger('content:bootstrap');
@@ -31,6 +35,8 @@ const log = getLogger('content:bootstrap');
 const LAST_BAR_GRACE_MS = 5000;
 const LAST_BAR_POLL_MS = 250;
 const OFFSET_PERSIST_DEBOUNCE_MS = 400;
+/** §R-P5: "last success > 15s ago" -> stale. Matches DataPoller's own base poll interval (5s) with real margin. */
+const FRESHNESS_WINDOW_MS = 15_000;
 
 async function waitForFirstBar(bridge: BridgeClient, graceMs: number): Promise<number | null> {
   const startedAt = Date.now();
@@ -50,6 +56,22 @@ function buildTradeHandler(widget: WidgetRoot, config: DemoSuggestionConfig): ()
   };
 }
 
+function isSnapshotFresh(snapshot: MarketDataSnapshot, nowMs: number): boolean {
+  if (snapshot.chartContext?.isFresh === false) return false;
+  if (snapshot.lastSuccessAtMs === null) return false;
+  return nowMs - snapshot.lastSuccessAtMs <= FRESHNESS_WINDOW_MS;
+}
+
+function reportTabVisibility(): void {
+  const message: TabVisibilityMessage = {
+    type: 'tradepilot/tab-visibility',
+    visible: document.visibilityState === 'visible',
+  };
+  chrome.runtime.sendMessage(message).catch((error: unknown) => {
+    log.debug('tab-visibility report failed (non-fatal)', { error: String(error) });
+  });
+}
+
 export class Bootstrap {
   private bridge: BridgeClient | null = null;
   private widget: WidgetRoot | null = null;
@@ -65,6 +87,15 @@ export class Bootstrap {
   private offsetPersistTimer: ReturnType<typeof setTimeout> | null = null;
   private stopPeriodicProbe: (() => void) | null = null;
 
+  private hostConfig: InternalApiHostConfig | null = null;
+  private latestSnapshot: MarketDataSnapshot | null = null;
+  private readonly onRuntimeMessage = (message: unknown): void => {
+    if (isDataUpdateMessage(message)) {
+      this.applyMarketData(message.snapshot);
+    }
+  };
+  private readonly onVisibilityChange = (): void => reportTabVisibility();
+
   async start(): Promise<void> {
     if (!shouldInject()) {
       log.debug('injection guard: already injected in this frame, skipping');
@@ -76,6 +107,12 @@ export class Bootstrap {
       void this.handleNavigation();
     });
     this.spaObserver.start();
+
+    // §P5: reports this tab's visibility so background's DataPoller only
+    // polls when something can actually see the result.
+    chrome.runtime.onMessage.addListener(this.onRuntimeMessage);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
+    reportTabVisibility();
 
     const state = await this.storage.load();
     this.lastKnownEnabled = state.enabled;
@@ -127,6 +164,7 @@ export class Bootstrap {
       return;
     }
 
+    this.hostConfig = hostConfig;
     const bridge = createBridgeClient(hostConfig.id);
     this.bridge = bridge;
 
@@ -220,6 +258,14 @@ export class Bootstrap {
     // §8.1: re-probe periodically so a vendor deploy mid-session is
     // caught within the interval, not from a bad fill.
     this.stopPeriodicProbe = probe.startPeriodic((state) => this.handleProbeUpdate(state, token));
+
+    // §P5: a data push may already have arrived while we were waiting on
+    // chart-ready/probe (e.g. re-mounting after an SPA nav) — apply it
+    // immediately rather than showing the Day-1 demo numbers again for a
+    // few extra seconds until the next scheduled push.
+    if (this.latestSnapshot !== null) {
+      this.applyMarketData(this.latestSnapshot);
+    }
   }
 
   private handleProbeUpdate(state: DegradationState, token: number): void {
@@ -232,6 +278,85 @@ export class Bootstrap {
       return;
     }
     this.widget.setMode(state.mode, state.reason);
+  }
+
+  /**
+   * §P5/§R-P5: applies a pushed MarketDataSnapshot, superseding the Day-1
+   * hardcoded suggestion (§6.0's own framing: "P5 replaces the hardcoded
+   * suggestion object... progressively real underneath"). This is a live
+   * override the moment ANY push arrives — including a push that merely
+   * confirms the API is unreachable — not something deferred until a
+   * successful response specifically. That's a deliberate reliability
+   * choice, not an accident: continuing to show the Day-1 demo numbers
+   * once P5 is wired in would be showing fabricated values with no
+   * "DEMO" framing left to justify it (§7.1 bans exactly that). The
+   * correct honest behavior once this path exists is "real data, or a
+   * visibly stale/disabled state" — never silently-stale fake numbers.
+   */
+  private applyMarketData(snapshot: MarketDataSnapshot): void {
+    this.latestSnapshot = snapshot;
+    const widget = this.widget;
+    const bridge = this.bridge;
+    const hostConfig = this.hostConfig;
+    if (widget === null || bridge === null || hostConfig === null) return;
+
+    // §R-P5 "unmapped symbol hides the widget rather than guessing."
+    const chartSymbol = bridge.symbol();
+    const mappedSymbol = chartSymbol !== null ? (hostConfig.symbolMap[chartSymbol] ?? null) : null;
+    if (chartSymbol !== null && mappedSymbol === null) {
+      log.warn('chart symbol has no entry in the symbol map — hiding widget', { chartSymbol });
+      widget.setHidden(true);
+      return;
+    }
+    widget.setHidden(false);
+
+    const fresh = isSnapshotFresh(snapshot, Date.now());
+    const suggestion = snapshot.suggestion;
+    const hasEntry = suggestion !== null && suggestion.recommendedLtp !== null;
+
+    let staleReason: string | null = null;
+    if (!fresh) staleReason = snapshot.lastError ?? 'stale';
+    else if (!hasEntry) staleReason = 'no suggestion';
+
+    const optionSuffix = suggestion?.recommendedOptionType
+      ? ` ${suggestion.recommendedOptionType}`
+      : '';
+    const symbolLabel =
+      hasEntry && suggestion !== null
+        ? `${suggestion.recommendedSymbol}${optionSuffix}`
+        : (mappedSymbol ?? 'TradePilot');
+
+    const suggestionData: WidgetSuggestionData = {
+      symbolLabel,
+      subLabel: hasEntry && suggestion !== null ? `LTP ${suggestion.recommendedLtp}` : null,
+      livePrice: () => this.bridge?.lastBar()?.close ?? null,
+      // §7.1 "no ?? 0, ever": missing/stale -> null, which LevelPill
+      // already renders as hidden/dash rather than guessing a level.
+      tp: fresh && hasEntry && suggestion !== null ? suggestion.tp : null,
+      sl: fresh && hasEntry && suggestion !== null ? suggestion.sl : null,
+      tradeDisabled: !fresh || !hasEntry,
+      staleReason,
+      onTrade: this.buildLiveTradeHandler(),
+    };
+    widget.updateSuggestion(suggestionData);
+  }
+
+  private buildLiveTradeHandler(): () => void {
+    return () => {
+      const widget = this.widget;
+      const suggestion = this.latestSnapshot?.suggestion;
+      if (widget === null) return;
+      if (suggestion === null || suggestion === undefined || suggestion.recommendedLtp === null) {
+        widget.showToast('No suggestion available to trade');
+        return;
+      }
+      const optionSuffix = suggestion.recommendedOptionType
+        ? ` ${suggestion.recommendedOptionType}`
+        : '';
+      const message = `Would place: ${suggestion.direction} ${suggestion.recommendedSymbol}${optionSuffix}, entry ${suggestion.recommendedLtp}, SL ${suggestion.sl ?? '—'}, TP ${suggestion.tp ?? '—'}`;
+      log.info(message);
+      widget.showToast(message);
+    };
   }
 
   /** Coalesces rapid drag-move updates into one storage write, not one per pointermove. */
@@ -268,6 +393,8 @@ export class Bootstrap {
     if (this.offsetPersistTimer !== null) clearTimeout(this.offsetPersistTimer);
     this.storageUnsubscribe?.();
     this.storageUnsubscribe = null;
+    chrome.runtime.onMessage.removeListener(this.onRuntimeMessage);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.spaObserver?.stop();
     this.spaObserver = null;
     this.teardownWidgetAndBridge();
