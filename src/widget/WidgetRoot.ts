@@ -304,6 +304,10 @@ export class WidgetRoot {
       price: this.effectiveSlPrice(),
       pending: this.position?.slState.kind === 'pending',
     });
+    // Anchored mode's visibility comes from AnchorManager reading these
+    // same getters every frame; manual mode has no such loop, so new data
+    // needs an explicit re-layout to pick up a value going null <-> non-null.
+    if (this.mode === 'manual') this.applyManualLayout();
   }
 
   /**
@@ -342,6 +346,7 @@ export class WidgetRoot {
         : {}),
       confirm: this.currentConfirm,
     });
+    if (this.mode === 'manual') this.applyManualLayout();
   }
 
   /**
@@ -362,6 +367,21 @@ export class WidgetRoot {
   setUnprotectedWarning(visible: boolean, message = ''): void {
     this.unprotectedBanner.textContent = message;
     this.unprotectedBanner.style.display = visible ? '' : 'none';
+  }
+
+  /**
+   * §7.1: "Data > 15s old or is_fresh===false ⇒ dim + `stale` + Trade
+   * disabled." Distinct from the R-OCO banner (that's a safety alert;
+   * this is a visual "don't fully trust what you're looking at" cue) and
+   * from the "no suggestion" case (fresh data legitimately saying there's
+   * nothing to trade right now isn't the same as data we can't vouch
+   * for). Applies to the pills and suggestion card only — never to the
+   * R-OCO banner or manual/demo badges, which must stay maximally visible.
+   */
+  setDataStale(stale: boolean): void {
+    for (const el of [this.tpPill.element, this.slPill.element, this.suggestionCard.element]) {
+      el.classList.toggle('tp-dimmed', stale);
+    }
   }
 
   /** Shows a transient message inside this widget's own Shadow DOM layer (§6.0's Trade-click confirm stub, and reusable by P6's success/error notices). */
@@ -416,19 +436,32 @@ export class WidgetRoot {
   }
 
   private applyManualLayout(): void {
-    const elements: Record<string, HTMLElement> = {
-      [TARGET_TP]: this.tpPill.element,
-      [TARGET_SUGGESTION]: this.suggestionCard.element,
-      [TARGET_SL]: this.slPill.element,
+    // §7.1/§R-P5: "Missing tp ⇒ hide the TP pill, keep the rest" applies
+    // here too, not just in anchored mode — manual mode's whole point is
+    // "coordinate math is untrusted," not "content nullability doesn't
+    // matter anymore." Anchored mode gets this for free from
+    // AnchorManager's null-price-hides logic; manual mode has to check
+    // explicitly since it never calls into AnchorManager at all.
+    const elements: Record<string, { el: HTMLElement; hasValue: boolean }> = {
+      [TARGET_TP]: { el: this.tpPill.element, hasValue: this.effectiveTpPrice() !== null },
+      [TARGET_SUGGESTION]: {
+        el: this.suggestionCard.element,
+        hasValue: this.suggestion.livePrice() !== null,
+      },
+      [TARGET_SL]: { el: this.slPill.element, hasValue: this.effectiveSlPrice() !== null },
     };
     for (const [id, layout] of Object.entries(MANUAL_LAYOUT_OFFSETS)) {
-      const el = elements[id];
-      if (el === undefined) continue;
+      const target = elements[id];
+      if (target === undefined) continue;
+      if (!target.hasValue) {
+        target.el.classList.add('tp-positioned--hidden');
+        continue;
+      }
       const offset = this.dragManager.getOffset(id);
       const x = window.innerWidth - layout.rightMargin + offset.dx;
       const y = layout.top + offset.dy;
-      el.classList.remove('tp-positioned--hidden');
-      el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      target.el.classList.remove('tp-positioned--hidden');
+      target.el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
     }
   }
 

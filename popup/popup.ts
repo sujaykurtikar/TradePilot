@@ -22,16 +22,32 @@ function byId<T extends HTMLElement>(id: string): T {
   return el as T;
 }
 
+function applyHiddenReason(el: HTMLParagraphElement, reason: string | null): void {
+  if (reason === null) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+  el.hidden = false;
+  el.textContent = `Widget hidden: ${reason}`;
+}
+
 async function init(): Promise<void> {
   const enabledToggle = byId<HTMLInputElement>('enabled-toggle');
   const versionEl = byId<HTMLSpanElement>('version');
   const apiStatusEl = byId<HTMLSpanElement>('api-status');
   const resetButton = byId<HTMLButtonElement>('reset-position');
+  const hiddenReasonEl = byId<HTMLParagraphElement>('widget-hidden-reason');
 
   versionEl.textContent = `v${chrome.runtime.getManifest().version}`;
 
   const state = await storage.load();
   enabledToggle.checked = state.enabled;
+  applyHiddenReason(hiddenReasonEl, state.widgetHiddenReason);
+
+  // §7.7: content/Bootstrap.ts can hide/unhide the widget at any time
+  // while this popup happens to be open — keep it live, not a one-shot read.
+  storage.onChange((next) => applyHiddenReason(hiddenReasonEl, next.widgetHiddenReason));
 
   enabledToggle.addEventListener('change', () => {
     void storage.patch({ enabled: enabledToggle.checked });

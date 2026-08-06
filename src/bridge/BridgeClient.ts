@@ -63,7 +63,7 @@ export class BridgeClient implements ChartBridge {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly pending = new Map<
     string,
-    { resolve: (value: unknown) => void; reject: (reason: unknown) => void }
+    { resolve: (value: unknown) => void; reject: (reason: Error) => void }
   >();
   private readonly changeListeners = new Set<(reason: ChartChangeReason) => void>();
   private disposed = false;
@@ -107,23 +107,43 @@ export class BridgeClient implements ChartBridge {
     return entry.value as T;
   }
 
-  /** A genuine awaited RPC round trip — rejects on timeout or dispose. Used where a caller needs a settled result, not a cached-and-possibly-stale one (e.g. CapabilityProbe's startup probe, §P2). */
+  /**
+   * A genuine awaited RPC round trip — rejects on timeout or dispose. Used
+   * where a caller needs a settled result, not a cached-and-possibly-stale
+   * one (e.g. CapabilityProbe's startup probe, §P2).
+   *
+   * The timeout is cleared from inside the SAME resolve/reject wrappers
+   * stored in `this.pending`, rather than via a `promise.finally()`
+   * side-channel — that earlier shape needed a `.catch(() => {})` on the
+   * derived `.finally()` promise to avoid an unhandled-rejection warning,
+   * which is exactly the pattern §7.2 bans. This shape has nowhere for
+   * that to happen.
+   */
   private request<T>(method: BridgeMethodName, args: readonly unknown[]): Promise<T> {
     if (this.disposed) return Promise.reject(new Error('bridge client disposed'));
     const id = nextRequestId();
 
+    let timeoutHandle: ReturnType<typeof setTimeout>;
     const promise = new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timeoutHandle);
+          resolve(value as T);
+        },
+        reject: (reason) => {
+          clearTimeout(timeoutHandle);
+          reject(reason);
+        },
+      });
     });
 
-    const timeout = setTimeout(() => {
+    timeoutHandle = setTimeout(() => {
       const waiter = this.pending.get(id);
       if (waiter !== undefined) {
         this.pending.delete(id);
         waiter.reject(new Error('bridge request timed out'));
       }
     }, REQUEST_TIMEOUT_MS);
-    promise.finally(() => clearTimeout(timeout)).catch(() => {});
 
     postProtocolMessage({
       __ns: PROTOCOL_NAMESPACE,

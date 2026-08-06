@@ -52,8 +52,22 @@ export default [
       ],
       '@typescript-eslint/consistent-type-imports': 'error',
       'no-restricted-globals': ['error', ...RESTRICTED_GLOBALS],
-      // .catch(() => {}) is banned project-wide — §7.2 "No silent failures".
+      // Empty `catch {}` / `catch (e) {}` blocks are banned — §7.2 "No silent failures".
       'no-empty': ['error', { allowEmptyCatch: false }],
+      // `.catch(() => {})` / `.catch(function () {})` — the promise-chain
+      // equivalent of an empty catch block, and NOT caught by `no-empty`
+      // above (that rule only sees try/catch statements, not a `.catch()`
+      // method call). §7.2 bans this shape too: every failure must
+      // surface in the UI, log with context, or trip the degradation path.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "CallExpression[callee.property.name='catch'] > :matches(ArrowFunctionExpression, FunctionExpression)[body.type='BlockStatement'][body.body.length=0]",
+          message:
+            '.catch(() => {}) silently swallows a failure — §7.2 "No silent failures". Log it, surface it, or trip a degradation path instead.',
+        },
+      ],
       // 'smart' still bans loose == everywhere EXCEPT `x == null`, the
       // conventional idiom for "null or undefined" — used throughout for
       // optional bridge/API values.

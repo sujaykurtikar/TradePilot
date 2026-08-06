@@ -1,19 +1,36 @@
 /**
- * Migration scaffold (§P1). Only version 1 exists today, so this runs
- * zero migrations in practice — it exists so the NEXT schema change has
- * somewhere to go instead of a hand-rolled one-off in StorageManager.
+ * Migration scaffold (§P1), first actually exercised by v1 -> v2 (§7.7's
+ * "widget hidden with a reason in the popup" needed a place to store that
+ * reason — see schema.ts's StorageSchemaV2 doc comment).
  */
 
-import { CURRENT_SCHEMA_VERSION, DEFAULT_STORAGE, type StorageSchema } from './schema';
+import {
+  CURRENT_SCHEMA_VERSION,
+  DEFAULT_STORAGE,
+  type StorageSchema,
+  type StorageSchemaV1,
+  type StorageSchemaV2,
+} from './schema';
 import { getLogger } from '../../utils/logger';
 
 const log = getLogger('storage:migrations');
 
 type Migration = (input: unknown) => unknown;
 
+function upgradeV1ToV2(input: unknown): StorageSchemaV2 {
+  const v1 = input as StorageSchemaV1;
+  return {
+    version: 2,
+    enabled: v1.enabled,
+    widgetCollapsed: v1.widgetCollapsed,
+    widgetOffsets: v1.widgetOffsets,
+    widgetHiddenReason: null, // new field — no prior value to carry forward
+  };
+}
+
 /** Keyed by the version a migration upgrades FROM. */
 const MIGRATIONS: Record<number, Migration> = {
-  // 1: (v1) => upgradeToV2(v1),  <- example shape for the next migration
+  1: upgradeV1ToV2,
 };
 
 /** Best-effort: unknown/corrupt input falls back to defaults rather than throwing (§7.1/§7.2). */

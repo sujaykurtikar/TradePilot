@@ -102,3 +102,13 @@ body {
   color: #9aa1b8;
   line-height: 1.4;
 }
+
+.popup__warning {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(224, 85, 95, 0.15);
+  color: #e0555f;
+  font-size: 11px;
+  line-height: 1.4;
+}

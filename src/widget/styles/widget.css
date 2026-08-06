@@ -37,6 +37,15 @@
   visibility: hidden;
 }
 
+/* §7.1: "dim + stale + Trade disabled" when data is > 15s old or is_fresh
+   is false. A visual cue that what's shown shouldn't be fully trusted —
+   distinct from the R-OCO banner (a safety alert) and never applied to
+   it or to the manual/demo badges. */
+.tp-dimmed {
+  opacity: 0.55;
+  transition: opacity var(--tp-duration-medium) var(--tp-easing);
+}
+
 /* ---------- Level pill (TP / SL) ---------- */
 
 .tp-pill {

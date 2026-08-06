@@ -84,6 +84,43 @@ describe('WidgetRoot — §R-P2 mode switching', () => {
     expect(tpPill?.style.transform).not.toBe(''); // fixed layout still positions it, just not via price
   });
 
+  it('manual mode hides a pill whose price is null, same as anchored mode (§7.1/§R-P5 "missing tp -> hide the TP pill")', async () => {
+    widget = makeWidget({
+      initialMode: 'manual',
+      suggestion: {
+        symbolLabel: '24120 CE',
+        livePrice: () => 24120,
+        tp: null,
+        sl: 24116,
+        onTrade: () => {},
+      },
+    });
+    await widget.mount();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const tpPill = shadow?.querySelector('.tp-pill--tp') as HTMLElement | null;
+    const slPill = shadow?.querySelector('.tp-pill--sl') as HTMLElement | null;
+    expect(tpPill?.classList.contains('tp-positioned--hidden')).toBe(true);
+    expect(slPill?.classList.contains('tp-positioned--hidden')).toBe(false);
+  });
+
+  it('manual mode re-hides/re-shows a pill when a later update changes its price to/from null', async () => {
+    widget = makeWidget({ initialMode: 'manual' }); // starts with tp: 24126 (non-null)
+    await widget.mount();
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const tpPill = shadow?.querySelector('.tp-pill--tp') as HTMLElement;
+    expect(tpPill.classList.contains('tp-positioned--hidden')).toBe(false);
+
+    widget.updateSuggestion({
+      symbolLabel: '24120 CE',
+      livePrice: () => 24120,
+      tp: null,
+      sl: 24116,
+      onTrade: () => {},
+    });
+    expect(tpPill.classList.contains('tp-positioned--hidden')).toBe(true);
+  });
+
   it('setMode() switches live between anchored and manual, reversibly', async () => {
     widget = makeWidget();
     await widget.mount();
@@ -240,5 +277,61 @@ describe('WidgetRoot — §P6t position-mode TP/SL drag', () => {
     handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: -50 }));
 
     expect(onPositionRiskDrag).not.toHaveBeenCalled();
+  });
+});
+
+describe('WidgetRoot — §7.1/§3 visibility and staleness controls', () => {
+  let widget: WidgetRoot | null = null;
+
+  afterEach(() => {
+    widget?.destroy();
+    widget = null;
+    document.body.innerHTML = '';
+  });
+
+  it('setDataStale(true) dims the pills and suggestion card, never the R-OCO banner or badges', async () => {
+    widget = makeWidget({ demoMode: true });
+    await widget.mount();
+    widget.setDataStale(true);
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    expect(shadow?.querySelector('.tp-pill--tp')?.classList.contains('tp-dimmed')).toBe(true);
+    expect(shadow?.querySelector('.tp-pill--sl')?.classList.contains('tp-dimmed')).toBe(true);
+    expect(shadow?.querySelector('.tp-card')?.classList.contains('tp-dimmed')).toBe(true);
+    expect(shadow?.querySelector('.tp-banner-unprotected')?.classList.contains('tp-dimmed')).toBe(
+      false,
+    );
+    expect(shadow?.querySelector('.tp-badge-demo')?.classList.contains('tp-dimmed')).toBe(false);
+
+    widget.setDataStale(false);
+    expect(shadow?.querySelector('.tp-pill--tp')?.classList.contains('tp-dimmed')).toBe(false);
+  });
+
+  it('setUnprotectedWarning shows/hides the R-OCO banner with the given message', async () => {
+    widget = makeWidget();
+    await widget.mount();
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const banner = shadow?.querySelector('.tp-banner-unprotected') as HTMLElement;
+    expect(banner.style.display).toBe('none');
+
+    widget.setUnprotectedWarning(true, '⚠ Backend unreachable — 1 open position(s) unprotected!');
+    expect(banner.style.display).not.toBe('none');
+    expect(banner.textContent).toContain('unprotected');
+
+    widget.setUnprotectedWarning(false);
+    expect(banner.style.display).toBe('none');
+  });
+
+  it('setHidden hides the whole layer independent of collapse state', async () => {
+    widget = makeWidget();
+    await widget.mount();
+    const layer = document
+      .getElementById('tradepilot-widget-host')
+      ?.shadowRoot?.querySelector('.tp-layer') as HTMLElement;
+    expect(layer.style.display).not.toBe('none');
+    widget.setHidden(true);
+    expect(layer.style.display).toBe('none');
+    widget.setHidden(false);
+    expect(layer.style.display).not.toBe('none');
   });
 });

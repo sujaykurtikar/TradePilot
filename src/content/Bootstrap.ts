@@ -112,6 +112,7 @@ export class Bootstrap {
   private pendingOffsets: Record<string, Offset> = {};
   private offsetPersistTimer: ReturnType<typeof setTimeout> | null = null;
   private stopPeriodicProbe: (() => void) | null = null;
+  private unsubscribeBridgeChange: (() => void) | null = null;
 
   private hostConfig: InternalApiHostConfig | null = null;
   private latestSnapshot: MarketDataSnapshot | null = null;
@@ -130,6 +131,9 @@ export class Bootstrap {
 
   // §P6t trail SL/TP state.
   private pendingRiskDrag: PendingRiskDrag | null = null;
+
+  // §7.7: "widget hidden with a reason in the popup."
+  private lastWrittenHiddenReason: string | null = null;
 
   async start(): Promise<void> {
     if (!shouldInject()) {
@@ -285,6 +289,20 @@ export class Bootstrap {
     // caught within the interval, not from a bad fill.
     this.stopPeriodicProbe = probe.startPeriodic((state) => this.handleProbeUpdate(state, token));
 
+    // §9 test matrix "Symbol switch / Timeframe switch -> clean re-anchor,
+    // no stale numbers": the chart can report a new symbol via the bridge
+    // well before the next scheduled poll (up to 30s away under backoff).
+    // Re-run the symbol-map check immediately against the cached snapshot
+    // — cheap (no network call) and closes the "stale numbers/label for
+    // several seconds after a symbol switch" gap. The suggestion CONTENT
+    // itself still waits for the next real poll — there is no "refetch
+    // now" endpoint — but a newly-unmapped symbol hides the widget right
+    // away rather than continuing to show the old symbol's numbers.
+    this.unsubscribeBridgeChange = bridge.onChange((reason) => {
+      if (reason !== 'symbol' && reason !== 'interval') return;
+      if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+    });
+
     // §P5: a data push may already have arrived while we were waiting on
     // chart-ready/probe (e.g. re-mounting after an SPA nav) — apply it
     // immediately rather than showing the Day-1 demo numbers again for a
@@ -342,9 +360,13 @@ export class Bootstrap {
     if (chartSymbol !== null && mappedSymbol === null) {
       log.warn('chart symbol has no entry in the symbol map — hiding widget', { chartSymbol });
       widget.setHidden(true);
+      // §7.7: "widget hidden with a reason in the popup" — this is the
+      // one place that reason gets written; popup.ts reads it back.
+      this.setWidgetHiddenReason(`Symbol "${chartSymbol}" is not in the symbol map.`);
       return;
     }
     widget.setHidden(false);
+    this.setWidgetHiddenReason(null);
 
     // §P6: "levels must not shift between the decision and the click" —
     // while the user is hovering Trade or has a confirm open, the
@@ -354,6 +376,9 @@ export class Bootstrap {
     if (this.isFrozen) return;
 
     const fresh = isSnapshotFresh(snapshot, Date.now());
+    // §7.1: "dim + stale + Trade disabled" — the dim is specifically for
+    // genuinely stale data, not for a fresh "no suggestion right now".
+    widget.setDataStale(!fresh);
     const suggestion = snapshot.suggestion;
     const hasEntry = suggestion !== null && suggestion.recommendedLtp !== null;
 
@@ -719,13 +744,26 @@ export class Bootstrap {
     }, OFFSET_PERSIST_DEBOUNCE_MS);
   }
 
+  /** Debounces against redundant writes — applyMarketData calls this every poll (5-30s) even when nothing changed. */
+  private setWidgetHiddenReason(reason: string | null): void {
+    if (reason === this.lastWrittenHiddenReason) return;
+    this.lastWrittenHiddenReason = reason;
+    void this.storage.patch({ widgetHiddenReason: reason });
+  }
+
   private teardownWidgetAndBridge(): void {
     this.stopPeriodicProbe?.();
     this.stopPeriodicProbe = null;
+    this.unsubscribeBridgeChange?.();
+    this.unsubscribeBridgeChange = null;
     this.widget?.destroy();
     this.widget = null;
     this.bridge?.dispose();
     this.bridge = null;
+    // The widget is gone for reasons unrelated to symbol mapping (nav,
+    // disable, teardown) — a stale "hidden because X" would mislead the
+    // popup into blaming a cause that may no longer apply.
+    this.setWidgetHiddenReason(null);
   }
 
   /** Full teardown (§7.5/§R-P1) — everything released, injected flag cleared. */
