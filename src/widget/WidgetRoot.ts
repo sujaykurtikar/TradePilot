@@ -17,7 +17,11 @@ import { DragManager, type Offset } from './managers/DragManager';
 import { StateManager } from './managers/StateManager';
 import { ShadowHost } from './ShadowHost';
 import { createLevelPill, type LevelPillComponent } from './components/LevelPill';
-import { createSuggestionCard, type SuggestionCardComponent } from './components/SuggestionCard';
+import {
+  createSuggestionCard,
+  type SuggestionCardComponent,
+  type TradeConfirmDetails,
+} from './components/SuggestionCard';
 import { showToast } from './components/Toast';
 import { getLogger } from '../utils/logger';
 
@@ -33,6 +37,8 @@ export interface WidgetSuggestionData {
   readonly tradeDisabled?: boolean;
   readonly staleReason?: string | null;
   readonly onTrade: () => void;
+  /** §P6: freeze the suggestion on hover/focus of Trade — levels must not shift mid-decision. */
+  readonly onTradeFocusChange?: (focused: boolean) => void;
 }
 
 /** §R-P2's degradation ladder: 'anchored' = full price tracking, 'manual' = fixed draggable panel + badge (coordinate math is untrusted, but values are still shown/tradeable). */
@@ -84,6 +90,8 @@ export class WidgetRoot {
   private readonly manualBadgeReasonEl: HTMLSpanElement;
   private manualResizeListener: (() => void) | null = null;
   private unsubscribeDragForManual: (() => void) | null = null;
+  private currentConfirm: TradeConfirmDetails | null = null;
+  private readonly unprotectedBanner: HTMLDivElement;
 
   constructor(opts: WidgetRootOptions) {
     this.suggestion = opts.suggestion;
@@ -102,6 +110,14 @@ export class WidgetRoot {
     this.manualBadgeReasonEl = document.createElement('span');
     this.manualBadgeReasonEl.className = 'tp-badge-manual__reason';
     this.manualBadge.append(manualBadgeLabel, this.manualBadgeReasonEl);
+
+    // §3/R-OCO: "the single most dangerous state in the system" — an
+    // open position with no backend reachable to enforce its SL/TP.
+    // Unmissable, not a subtle tint; hidden by default.
+    this.unprotectedBanner = document.createElement('div');
+    this.unprotectedBanner.className = 'tp-banner-unprotected';
+    this.unprotectedBanner.style.display = 'none';
+    this.unprotectedBanner.setAttribute('role', 'alert');
 
     if (opts.initialOffsets) {
       for (const [id, offset] of Object.entries(opts.initialOffsets)) {
@@ -145,6 +161,7 @@ export class WidgetRoot {
       this.slPill.element,
       this.puck,
       this.manualBadge,
+      this.unprotectedBanner,
     );
     if (this.demoBadge) this.host.layer.appendChild(this.demoBadge);
 
@@ -208,13 +225,41 @@ export class WidgetRoot {
     this.suggestion = next;
     this.tpPill.update({ variant: 'tp', price: next.tp });
     this.slPill.update({ variant: 'sl', price: next.sl });
+    this.renderSuggestionCard();
+  }
+
+  private renderSuggestionCard(): void {
     this.suggestionCard.update({
-      symbolLabel: next.symbolLabel,
-      subLabel: next.subLabel ?? null,
-      tradeDisabled: next.tradeDisabled ?? false,
-      staleReason: next.staleReason ?? null,
-      onTrade: next.onTrade,
+      symbolLabel: this.suggestion.symbolLabel,
+      subLabel: this.suggestion.subLabel ?? null,
+      tradeDisabled: this.suggestion.tradeDisabled ?? false,
+      staleReason: this.suggestion.staleReason ?? null,
+      onTrade: this.suggestion.onTrade,
+      ...(this.suggestion.onTradeFocusChange
+        ? { onTradeFocusChange: this.suggestion.onTradeFocusChange }
+        : {}),
+      confirm: this.currentConfirm,
     });
+  }
+
+  /**
+   * §P6's confirm step: pass a non-null TradeConfirmDetails to switch the
+   * Suggested card into the confirmation view (strike/side/lots/entry/
+   * SL/TP/₹risk + Confirm/Cancel), null to return to the normal view.
+   * Independent of updateSuggestion() — a live data push arriving while
+   * a confirm is showing re-merges through renderSuggestionCard() rather
+   * than clobbering it (though the caller is expected to have frozen
+   * updates during confirm anyway; see Bootstrap.ts).
+   */
+  setTradeConfirm(details: TradeConfirmDetails | null): void {
+    this.currentConfirm = details;
+    this.renderSuggestionCard();
+  }
+
+  /** §3/R-OCO: unmissable warning that open position(s) have no reachable backend to enforce their SL/TP. */
+  setUnprotectedWarning(visible: boolean, message = ''): void {
+    this.unprotectedBanner.textContent = message;
+    this.unprotectedBanner.style.display = visible ? '' : 'none';
   }
 
   /** Shows a transient message inside this widget's own Shadow DOM layer (§6.0's Trade-click confirm stub, and reusable by P6's success/error notices). */

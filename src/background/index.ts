@@ -12,6 +12,7 @@ import { registerMessageRouter } from './MessageRouter';
 import { TabRegistry } from './TabRegistry';
 import { ApiClient } from './ApiClient';
 import { DataPoller } from './DataPoller';
+import { OrderService } from './OrderService';
 import { isMarketOpenIst } from '../utils/marketHours';
 import type { DataUpdateMessage } from '../core/messaging/messages';
 import { getLogger } from '../utils/logger';
@@ -27,6 +28,7 @@ const tabRegistry = new TabRegistry();
 // not an oversight; flagging it rather than silently hardcoding it.
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000';
 const apiClient = new ApiClient({ baseUrl: DEFAULT_API_BASE_URL });
+const orderService = new OrderService(DEFAULT_API_BASE_URL);
 
 const CONTENT_LIFECYCLE_PORT_NAME = 'tradepilot-content-lifecycle';
 
@@ -75,6 +77,7 @@ chrome.runtime.onConnect.addListener((port) => {
 registerMessageRouter({
   storage,
   tabRegistry,
+  orderService,
   getApiStatus: () => {
     const snapshot = poller.getSnapshot();
     if (snapshot.lastSuccessAtMs !== null) return 'reachable';

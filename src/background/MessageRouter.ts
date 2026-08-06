@@ -8,6 +8,8 @@
 import { isTradePilotRequest } from '../core/messaging/guards';
 import type {
   ApiReachability,
+  PlaceOrderRequest,
+  PlaceOrderResponse,
   StatusResponse,
   TradePilotRequest,
 } from '../core/messaging/messages';
@@ -17,9 +19,15 @@ import { getLogger } from '../utils/logger';
 
 const log = getLogger('background:message-router');
 
+/** Narrow interface OrderService satisfies — keeps this router testable without a real fetch-backed service. */
+export interface OrderPlacer {
+  placeOrder(req: PlaceOrderRequest): Promise<PlaceOrderResponse>;
+}
+
 export interface MessageRouterDeps {
   readonly storage: StorageManager;
   readonly tabRegistry: TabRegistry;
+  readonly orderService: OrderPlacer;
   readonly getApiStatus: () => ApiReachability;
 }
 
@@ -57,6 +65,24 @@ export function registerMessageRouter(deps: MessageRouterDeps): void {
         }
         return false; // no response expected
       }
+      case 'tradepilot/place-order':
+        deps.orderService
+          .placeOrder(req)
+          .then(sendResponse)
+          .catch((error: unknown) => {
+            // placeOrder() itself is designed to never throw (every path
+            // returns a PlaceOrderResponse) — this catch exists only as
+            // the required backstop, and if it ever fires that's itself
+            // a bug worth knowing about loudly.
+            log.error('place-order handler threw unexpectedly', { error: String(error) });
+            sendResponse({
+              type: 'tradepilot/order-result',
+              clientOrderId: req.clientOrderId,
+              outcome: 'ambiguous',
+              message: 'Unknown — check positions. An internal error occurred handling the order.',
+            });
+          });
+        return true;
       default: {
         const _exhaustive: never = req;
         log.warn('unhandled request type', { request: _exhaustive });

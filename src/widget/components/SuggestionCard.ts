@@ -2,13 +2,29 @@
  * "⚡ Suggested / <strike> CE / [Trade]" card (§P3 screenshot). The third
  * of the three independently-positionable elements (§R-P3).
  *
- * The Trade button here is a real <button> (§R-P3) whose click handler is
- * supplied by the caller — Day-1 wires it to a confirm-toast stub (§6.0);
- * P6 replaces that with the real order flow, this component doesn't
- * change.
+ * The Trade button is a real <button> (§R-P3). Clicking it does NOT
+ * submit anything directly — it asks the caller to show a confirm step
+ * (§P6: "Confirm step showing strike, side, lots, entry, SL, TP, and
+ * risk in ₹ before anything is sent"). When `confirm` is set, this
+ * component swaps its body for that confirmation view instead of the
+ * normal symbol/Trade-button layout.
  */
 
 import type { Destroyable } from './IconButton';
+
+export interface TradeConfirmDetails {
+  readonly direction: 'BUY' | 'SELL';
+  readonly strikeLabel: string; // e.g. "24120 CE"
+  readonly lots: number;
+  readonly entryPrice: number;
+  readonly sl: number | null;
+  readonly tp: number | null;
+  readonly riskRupees: number | null;
+  /** shown instead of the normal Confirm button while a submit is in flight (§R-P6 disable-on-submit) */
+  readonly submitting?: boolean;
+  readonly onConfirm: () => void;
+  readonly onCancel: () => void;
+}
 
 export interface SuggestionCardProps {
   readonly symbolLabel: string; // e.g. "24120 CE"
@@ -20,12 +36,18 @@ export interface SuggestionCardProps {
   readonly onTrade: () => void;
   /** §P6: freeze the suggestion on hover/focus of Trade — levels must not shift mid-decision. */
   readonly onTradeFocusChange?: (focused: boolean) => void;
+  /** Non-null switches the card into the confirmation view (§P6). */
+  readonly confirm?: TradeConfirmDetails | null;
 }
 
 export interface SuggestionCardComponent extends Destroyable {
   readonly element: HTMLDivElement;
   readonly handleElement: HTMLElement;
   update(props: SuggestionCardProps): void;
+}
+
+function formatRupees(value: number): string {
+  return `₹${Math.round(Math.abs(value)).toLocaleString('en-IN')}`;
 }
 
 export function createSuggestionCard(initial: SuggestionCardProps): SuggestionCardComponent {
@@ -47,6 +69,7 @@ export function createSuggestionCard(initial: SuggestionCardProps): SuggestionCa
 
   header.append(handle, title);
 
+  // ---- normal view ----
   const body = document.createElement('div');
   body.className = 'tp-card__body';
 
@@ -62,11 +85,35 @@ export function createSuggestionCard(initial: SuggestionCardProps): SuggestionCa
   tradeBtn.className = 'tp-card__trade-btn';
 
   body.append(symbolWrap, tradeBtn);
-  root.append(header, body);
+
+  // ---- confirm view (§P6) ----
+  const confirmView = document.createElement('div');
+  confirmView.className = 'tp-card__confirm';
+  confirmView.style.display = 'none';
+
+  const confirmSummary = document.createElement('div');
+  confirmSummary.className = 'tp-card__confirm-summary';
+
+  const confirmActions = document.createElement('div');
+  confirmActions.className = 'tp-card__confirm-actions';
+
+  const confirmBtn = document.createElement('button');
+  confirmBtn.type = 'button';
+  confirmBtn.className = 'tp-card__trade-btn';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'tp-icon-btn tp-card__cancel-btn';
+  cancelBtn.textContent = 'Cancel';
+
+  confirmActions.append(cancelBtn, confirmBtn);
+  confirmView.append(confirmSummary, confirmActions);
+
+  root.append(header, body, confirmView);
 
   let currentProps: SuggestionCardProps = initial;
 
-  const onClick = (): void => {
+  const onTradeClick = (): void => {
     if (tradeBtn.disabled) return;
     currentProps.onTrade();
   };
@@ -74,15 +121,53 @@ export function createSuggestionCard(initial: SuggestionCardProps): SuggestionCa
   const onBlur = (): void => currentProps.onTradeFocusChange?.(false);
   const onMouseEnter = (): void => currentProps.onTradeFocusChange?.(true);
   const onMouseLeave = (): void => currentProps.onTradeFocusChange?.(false);
+  const onConfirmClick = (): void => {
+    if (confirmBtn.disabled) return;
+    currentProps.confirm?.onConfirm();
+  };
+  const onCancelClick = (): void => {
+    if (cancelBtn.disabled) return;
+    currentProps.confirm?.onCancel();
+  };
 
-  tradeBtn.addEventListener('click', onClick);
+  tradeBtn.addEventListener('click', onTradeClick);
   tradeBtn.addEventListener('focus', onFocus);
   tradeBtn.addEventListener('blur', onBlur);
   tradeBtn.addEventListener('mouseenter', onMouseEnter);
   tradeBtn.addEventListener('mouseleave', onMouseLeave);
+  confirmBtn.addEventListener('click', onConfirmClick);
+  cancelBtn.addEventListener('click', onCancelClick);
+
+  function renderConfirm(confirm: TradeConfirmDetails): void {
+    body.style.display = 'none';
+    confirmView.style.display = '';
+
+    const lines = [
+      `${confirm.direction} ${confirm.lots}× ${confirm.strikeLabel}`,
+      `Entry ${confirm.entryPrice.toFixed(2)}`,
+      confirm.sl !== null ? `SL ${confirm.sl.toFixed(2)}` : 'SL —',
+      confirm.tp !== null ? `TP ${confirm.tp.toFixed(2)}` : 'TP —',
+      confirm.riskRupees !== null ? `Risk ${formatRupees(confirm.riskRupees)}` : 'Risk —',
+    ];
+    confirmSummary.textContent = lines.join(' · ');
+    confirmSummary.setAttribute('aria-label', `Confirm trade: ${lines.join(', ')}`);
+
+    const submitting = confirm.submitting ?? false;
+    confirmBtn.textContent = submitting ? 'Placing…' : 'Confirm';
+    confirmBtn.disabled = submitting;
+    cancelBtn.disabled = submitting;
+  }
 
   function render(props: SuggestionCardProps): void {
     currentProps = props;
+
+    if (props.confirm) {
+      renderConfirm(props.confirm);
+      return;
+    }
+    body.style.display = '';
+    confirmView.style.display = 'none';
+
     symbol.textContent = props.symbolLabel;
     sub.textContent = props.subLabel ?? '';
     sub.style.display = props.subLabel ? '' : 'none';
@@ -105,11 +190,13 @@ export function createSuggestionCard(initial: SuggestionCardProps): SuggestionCa
     handleElement: handle,
     update: render,
     destroy: () => {
-      tradeBtn.removeEventListener('click', onClick);
+      tradeBtn.removeEventListener('click', onTradeClick);
       tradeBtn.removeEventListener('focus', onFocus);
       tradeBtn.removeEventListener('blur', onBlur);
       tradeBtn.removeEventListener('mouseenter', onMouseEnter);
       tradeBtn.removeEventListener('mouseleave', onMouseLeave);
+      confirmBtn.removeEventListener('click', onConfirmClick);
+      cancelBtn.removeEventListener('click', onCancelClick);
     },
   };
 }

@@ -217,6 +217,35 @@
   font-weight: 600;
 }
 
+/* ---------- Trade confirm view (§P6) ---------- */
+
+.tp-card__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tp-space-2);
+}
+
+.tp-card__confirm-summary {
+  font-size: var(--tp-font-size-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+.tp-card__confirm-actions {
+  display: flex;
+  gap: var(--tp-space-2);
+  justify-content: flex-end;
+}
+
+.tp-card__cancel-btn {
+  width: auto;
+  height: auto;
+  padding: var(--tp-space-2) var(--tp-space-3);
+  border: 1px solid var(--tp-color-border);
+  border-radius: var(--tp-radius-sm);
+  font-size: var(--tp-font-size-md);
+}
+
 /* ---------- Shared: close button ---------- */
 
 .tp-icon-btn {

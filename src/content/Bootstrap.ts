@@ -15,19 +15,21 @@ import type { InternalApiHostConfig } from '../bridge/adapters/hostConfigs';
 import { CapabilityProbe, type DegradationState } from '../bridge/CapabilityProbe';
 import { WidgetRoot, type WidgetSuggestionData } from '../widget/WidgetRoot';
 import type { Offset } from '../widget/managers/DragManager';
-import {
-  buildDemoSuggestionConfig,
-  DEMO_FALLBACK_SPOT,
-  type DemoSuggestionConfig,
-} from './demoSuggestion';
+import { buildDemoSuggestionConfig, DEMO_FALLBACK_SPOT } from './demoSuggestion';
 import { waitForChartReady } from './ChartReadyDetector';
 import { SpaNavigationObserver } from './SpaNavigationObserver';
 import { markInjected, shouldInject, clearInjectedFlag } from './InjectionGuard';
 import { StorageManager } from '../core/storage/StorageManager';
 import type { StorageSchema } from '../core/storage/schema';
 import { isDataUpdateMessage } from '../core/messaging/guards';
-import type { TabVisibilityMessage } from '../core/messaging/messages';
+import type {
+  PlaceOrderRequest,
+  PlaceOrderResponse,
+  TabVisibilityMessage,
+} from '../core/messaging/messages';
 import type { MarketDataSnapshot } from '../core/api/types';
+import type { Suggestion } from '../models/Suggestion';
+import type { TradeConfirmDetails } from '../widget/components/SuggestionCard';
 import { getLogger } from '../utils/logger';
 
 const log = getLogger('content:bootstrap');
@@ -37,6 +39,17 @@ const LAST_BAR_POLL_MS = 250;
 const OFFSET_PERSIST_DEBOUNCE_MS = 400;
 /** §R-P5: "last success > 15s ago" -> stale. Matches DataPoller's own base poll interval (5s) with real margin. */
 const FRESHNESS_WINDOW_MS = 15_000;
+/** §10: no lot-size selector exists in the plan's UI (the screenshot shows no quantity stepper) — fixed at 1 until that's scoped. */
+const DEFAULT_LOTS = 1;
+/** §P6 slippage guard tolerance: the greater of 0.5% or a fixed floor (so a near-zero-priced instrument still gets a sane minimum tolerance). */
+const SLIPPAGE_TOLERANCE_FRACTION = 0.005;
+const SLIPPAGE_MIN_TOLERANCE = 0.5;
+
+interface ActiveConfirmContext {
+  readonly suggestion: Suggestion;
+  readonly lots: number;
+  readonly lotSize: number | null;
+}
 
 async function waitForFirstBar(bridge: BridgeClient, graceMs: number): Promise<number | null> {
   const startedAt = Date.now();
@@ -46,14 +59,6 @@ async function waitForFirstBar(bridge: BridgeClient, graceMs: number): Promise<n
     await new Promise((resolve) => setTimeout(resolve, LAST_BAR_POLL_MS));
   }
   return null;
-}
-
-function buildTradeHandler(widget: WidgetRoot, config: DemoSuggestionConfig): () => void {
-  return () => {
-    const message = `Would place: BUY ${config.strikeLabel}, entry ${config.entry}, SL ${config.sl}, TP ${config.tp}`;
-    log.info(message);
-    widget.showToast(message);
-  };
 }
 
 function isSnapshotFresh(snapshot: MarketDataSnapshot, nowMs: number): boolean {
@@ -94,6 +99,12 @@ export class Bootstrap {
       this.applyMarketData(message.snapshot);
     }
   };
+
+  // §P6 trade-confirm state.
+  private isFrozen = false;
+  private frozenSnapshot: MarketDataSnapshot | null = null;
+  private confirmShowing = false;
+  private activeConfirmContext: ActiveConfirmContext | null = null;
   private readonly onVisibilityChange = (): void => reportTabVisibility();
 
   async start(): Promise<void> {
@@ -213,12 +224,6 @@ export class Bootstrap {
     const persistedState = await this.storage.load();
     if (this.disposed || token !== this.runToken) return;
 
-    // The Trade handler needs a WidgetRoot instance (to call showToast on)
-    // that doesn't exist until after construction — constructed once with
-    // a no-op, then patched via updateSuggestion immediately below. This
-    // two-step dance is local to Day-1's stub; P6's real onTrade (calling
-    // our order API) won't need the widget instance itself and can be
-    // built before construction like everything else in this object.
     const widget = new WidgetRoot({
       bridge,
       demoMode: true,
@@ -238,20 +243,16 @@ export class Bootstrap {
         sl: suggestionConfig.sl,
         tradeDisabled: false,
         staleReason: null,
-        onTrade: () => {},
+        // §P6 supersedes the Day-1 toast-only stub the moment the widget
+        // exists — even before the first live data push, clicking Trade
+        // now goes through the real confirm flow (which will honestly
+        // report "no suggestion available" until data arrives, rather
+        // than fabricating a demo order).
+        onTrade: () => this.handleTradeClick(),
+        onTradeFocusChange: (focused) => this.handleTradeFocusChange(focused),
       },
     });
     this.widget = widget;
-    widget.updateSuggestion({
-      symbolLabel: suggestionConfig.strikeLabel,
-      subLabel: `Entry ${suggestionConfig.entry}`,
-      livePrice: () => bridge.lastBar()?.close ?? null,
-      tp: suggestionConfig.tp,
-      sl: suggestionConfig.sl,
-      tradeDisabled: false,
-      staleReason: null,
-      onTrade: buildTradeHandler(widget, suggestionConfig),
-    });
 
     await widget.mount();
 
@@ -300,6 +301,10 @@ export class Bootstrap {
     const hostConfig = this.hostConfig;
     if (widget === null || bridge === null || hostConfig === null) return;
 
+    // §3/R-OCO: never suppressed by the trade-confirm freeze below — an
+    // unprotected-position warning is a safety signal, not a suggestion.
+    this.updateUnprotectedWarning(widget, snapshot);
+
     // §R-P5 "unmapped symbol hides the widget rather than guessing."
     const chartSymbol = bridge.symbol();
     const mappedSymbol = chartSymbol !== null ? (hostConfig.symbolMap[chartSymbol] ?? null) : null;
@@ -309,6 +314,13 @@ export class Bootstrap {
       return;
     }
     widget.setHidden(false);
+
+    // §P6: "levels must not shift between the decision and the click" —
+    // while the user is hovering Trade or has a confirm open, the
+    // displayed suggestion is frozen; fresh pushes still update
+    // latestSnapshot (read at confirm time for the slippage check) but
+    // don't touch what's rendered until the freeze lifts.
+    if (this.isFrozen) return;
 
     const fresh = isSnapshotFresh(snapshot, Date.now());
     const suggestion = snapshot.suggestion;
@@ -336,27 +348,193 @@ export class Bootstrap {
       sl: fresh && hasEntry && suggestion !== null ? suggestion.sl : null,
       tradeDisabled: !fresh || !hasEntry,
       staleReason,
-      onTrade: this.buildLiveTradeHandler(),
+      onTrade: () => this.handleTradeClick(),
+      onTradeFocusChange: (focused) => this.handleTradeFocusChange(focused),
     };
     widget.updateSuggestion(suggestionData);
   }
 
-  private buildLiveTradeHandler(): () => void {
-    return () => {
-      const widget = this.widget;
-      const suggestion = this.latestSnapshot?.suggestion;
-      if (widget === null) return;
-      if (suggestion === null || suggestion === undefined || suggestion.recommendedLtp === null) {
-        widget.showToast('No suggestion available to trade');
-        return;
-      }
+  /** §3/R-OCO: "the single most dangerous state in the system" — open position(s) with no reachable backend to enforce their SL/TP. */
+  private updateUnprotectedWarning(widget: WidgetRoot, snapshot: MarketDataSnapshot): void {
+    const hasPositions = snapshot.positions.length > 0;
+    const fresh = isSnapshotFresh(snapshot, Date.now());
+    if (hasPositions && !fresh) {
+      widget.setUnprotectedWarning(
+        true,
+        `⚠ Backend unreachable — ${snapshot.positions.length} open position(s) unprotected!`,
+      );
+    } else {
+      widget.setUnprotectedWarning(false);
+    }
+  }
+
+  private handleTradeFocusChange(focused: boolean): void {
+    if (focused) {
+      this.isFrozen = true;
+      this.frozenSnapshot = this.latestSnapshot;
+      return;
+    }
+    // A hidden confirm-view Trade button can fire blur/mouseleave as a
+    // side effect of the DOM swap into the confirm view — don't let that
+    // unfreeze mid-confirm.
+    if (this.confirmShowing) return;
+    this.isFrozen = false;
+    this.frozenSnapshot = null;
+    if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+  }
+
+  private buildTradeConfirmDetails(submitting: boolean): TradeConfirmDetails | null {
+    const ctx = this.activeConfirmContext;
+    const entryPrice = ctx?.suggestion.recommendedLtp ?? null;
+    if (ctx === null || entryPrice === null) return null;
+    const { suggestion, lots, lotSize } = ctx;
+    const riskRupees =
+      suggestion.sl !== null && lotSize !== null
+        ? Math.abs(entryPrice - suggestion.sl) * lotSize * lots
+        : null;
+    const optionSuffix = suggestion.recommendedOptionType
+      ? ` ${suggestion.recommendedOptionType}`
+      : '';
+    return {
+      direction: suggestion.direction,
+      strikeLabel: `${suggestion.recommendedSymbol}${optionSuffix}`,
+      lots,
+      entryPrice,
+      sl: suggestion.sl,
+      tp: suggestion.tp,
+      riskRupees,
+      submitting,
+      onConfirm: () => {
+        void this.handleConfirmClick();
+      },
+      onCancel: () => this.resetConfirmState(),
+    };
+  }
+
+  private handleTradeClick(): void {
+    const widget = this.widget;
+    if (widget === null) return;
+
+    // Freeze now even if hover/focus somehow didn't fire first (e.g.
+    // keyboard activation without a preceding pointer hover).
+    this.isFrozen = true;
+    const snapshot = this.frozenSnapshot ?? this.latestSnapshot;
+    this.frozenSnapshot = snapshot;
+    const suggestion = snapshot?.suggestion ?? null;
+    if (suggestion === null || suggestion.recommendedLtp === null) {
+      widget.showToast('No suggestion available to trade');
+      this.isFrozen = false;
+      this.frozenSnapshot = null;
+      return;
+    }
+
+    this.activeConfirmContext = {
+      suggestion,
+      lots: DEFAULT_LOTS,
+      lotSize: snapshot?.chartContext?.lotSize ?? null,
+    };
+    this.confirmShowing = true;
+    widget.setTradeConfirm(this.buildTradeConfirmDetails(false));
+  }
+
+  private resetConfirmState(): void {
+    this.confirmShowing = false;
+    this.activeConfirmContext = null;
+    this.isFrozen = false;
+    this.frozenSnapshot = null;
+    this.widget?.setTradeConfirm(null);
+    if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+  }
+
+  /**
+   * §R-P6 — the highest-stakes call in the project. Idempotency key
+   * generated fresh here, exactly once per confirm click. No auto-retry:
+   * this fires the request exactly once and reports whatever comes back,
+   * including an honest 'ambiguous' outcome rather than guessing.
+   */
+  private async handleConfirmClick(): Promise<void> {
+    const widget = this.widget;
+    const bridge = this.bridge;
+    const ctx = this.activeConfirmContext;
+    const entryPrice = ctx?.suggestion.recommendedLtp ?? null;
+    if (widget === null || ctx === null || entryPrice === null) {
+      this.resetConfirmState();
+      return;
+    }
+    const { suggestion, lots } = ctx;
+
+    // §P6 slippage guard: the suggestion is stamped with the price it was
+    // computed at (Suggestion.computedAtPrice); if live price has since
+    // moved beyond tolerance, block and make the user re-click Trade to
+    // pick up fresh levels rather than submitting against a stale price.
+    const livePrice = bridge?.lastBar()?.close ?? null;
+    const referencePrice = suggestion.computedAtPrice ?? entryPrice;
+    const tolerance = Math.max(
+      referencePrice * SLIPPAGE_TOLERANCE_FRACTION,
+      SLIPPAGE_MIN_TOLERANCE,
+    );
+    if (livePrice !== null && Math.abs(livePrice - referencePrice) > tolerance) {
+      widget.showToast(
+        'Price moved since this suggestion was computed — click Trade again to refresh.',
+      );
+      this.resetConfirmState();
+      return;
+    }
+
+    // §2's /recommend response has no explicit strike field — the ATM
+    // strike from /chart/state is the only numeric strike the documented
+    // API surface actually provides. Documented assumption, not a
+    // guess made silently.
+    const strike = this.latestSnapshot?.chartContext?.atmStrike ?? null;
+    if (suggestion.recommendedOptionType === null || strike === null) {
+      widget.showToast('Cannot place order — missing strike or option type.');
+      this.resetConfirmState();
+      return;
+    }
+
+    widget.setTradeConfirm(this.buildTradeConfirmDetails(true)); // §R-P6 disable-on-submit
+
+    const clientOrderId = crypto.randomUUID();
+    const request: PlaceOrderRequest = {
+      type: 'tradepilot/place-order',
+      clientOrderId,
+      direction: suggestion.direction,
+      lots,
+      strike,
+      optionType: suggestion.recommendedOptionType,
+      sl: suggestion.sl,
+      tp: suggestion.tp,
+      // Paper is the default and the only wired path — see
+      // OrderService.ts's doc comment on why live isn't guessed at.
+      paperMode: true,
+    };
+
+    let response: PlaceOrderResponse | null = null;
+    try {
+      const rawResponse: PlaceOrderResponse | undefined = await chrome.runtime.sendMessage(request);
+      response = rawResponse ?? null;
+    } catch (error) {
+      log.error('order submission failed to reach the service worker', {
+        clientOrderId,
+        error: String(error),
+      });
+    }
+
+    if (response === null) {
+      widget.showToast('Unknown — check positions. Could not reach the extension background.');
+    } else if (response.outcome === 'accepted') {
       const optionSuffix = suggestion.recommendedOptionType
         ? ` ${suggestion.recommendedOptionType}`
         : '';
-      const message = `Would place: ${suggestion.direction} ${suggestion.recommendedSymbol}${optionSuffix}, entry ${suggestion.recommendedLtp}, SL ${suggestion.sl ?? '—'}, TP ${suggestion.tp ?? '—'}`;
-      log.info(message);
-      widget.showToast(message);
-    };
+      widget.showToast(
+        `Order placed: ${suggestion.direction} ${lots}× ${suggestion.recommendedSymbol}${optionSuffix}`,
+      );
+    } else {
+      // Covers both 'rejected' and 'ambiguous' — §R-P6: inline error, widget stays usable, never a silent failure.
+      widget.showToast(response.message);
+    }
+
+    this.resetConfirmState();
   }
 
   /** Coalesces rapid drag-move updates into one storage write, not one per pointermove. */

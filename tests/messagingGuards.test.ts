@@ -2,10 +2,23 @@ import { describe, it, expect } from 'vitest';
 import {
   isDataUpdateMessage,
   isGetStatusRequest,
+  isPlaceOrderRequest,
   isTabVisibilityMessage,
   isTradePilotRequest,
 } from '../src/core/messaging/guards';
 import { EMPTY_MARKET_DATA_SNAPSHOT } from '../src/core/api/types';
+
+const VALID_PLACE_ORDER = {
+  type: 'tradepilot/place-order',
+  clientOrderId: 'order-1',
+  direction: 'BUY',
+  lots: 1,
+  strike: 24100,
+  optionType: 'CE',
+  sl: 24050,
+  tp: 24150,
+  paperMode: true,
+};
 
 describe('message guards — §7.1 "a guard, not a cast"', () => {
   it('accepts a well-formed get-status request', () => {
@@ -40,5 +53,38 @@ describe('message guards — §7.1 "a guard, not a cast"', () => {
     ).toBe(true);
     expect(isDataUpdateMessage({ type: 'tradepilot/data-update' })).toBe(false);
     expect(isDataUpdateMessage({ type: 'tradepilot/data-update', snapshot: 'nope' })).toBe(false);
+  });
+
+  describe('isPlaceOrderRequest — §R-P6, the order-submission path', () => {
+    it('accepts a well-formed request', () => {
+      expect(isPlaceOrderRequest(VALID_PLACE_ORDER)).toBe(true);
+      expect(isTradePilotRequest(VALID_PLACE_ORDER)).toBe(true);
+    });
+
+    it('accepts nullable sl/tp', () => {
+      expect(isPlaceOrderRequest({ ...VALID_PLACE_ORDER, sl: null, tp: null })).toBe(true);
+    });
+
+    it('rejects a missing or empty clientOrderId', () => {
+      const { clientOrderId: _drop, ...rest } = VALID_PLACE_ORDER;
+      expect(isPlaceOrderRequest(rest)).toBe(false);
+      expect(isPlaceOrderRequest({ ...VALID_PLACE_ORDER, clientOrderId: '' })).toBe(false);
+    });
+
+    it('rejects an invalid direction or optionType', () => {
+      expect(isPlaceOrderRequest({ ...VALID_PLACE_ORDER, direction: 'HOLD' })).toBe(false);
+      expect(isPlaceOrderRequest({ ...VALID_PLACE_ORDER, optionType: 'XX' })).toBe(false);
+    });
+
+    it('rejects non-positive or non-finite lots', () => {
+      expect(isPlaceOrderRequest({ ...VALID_PLACE_ORDER, lots: 0 })).toBe(false);
+      expect(isPlaceOrderRequest({ ...VALID_PLACE_ORDER, lots: -1 })).toBe(false);
+      expect(isPlaceOrderRequest({ ...VALID_PLACE_ORDER, lots: NaN })).toBe(false);
+    });
+
+    it('rejects a missing paperMode flag', () => {
+      const { paperMode: _drop, ...rest } = VALID_PLACE_ORDER;
+      expect(isPlaceOrderRequest(rest)).toBe(false);
+    });
   });
 });
