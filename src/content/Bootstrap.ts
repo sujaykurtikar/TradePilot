@@ -13,7 +13,11 @@ import { createBridgeClient, type BridgeClient } from '../bridge/BridgeClient';
 import { resolveHostConfigForLocation } from '../bridge/adapters/hostConfigs';
 import { WidgetRoot } from '../widget/WidgetRoot';
 import type { Offset } from '../widget/managers/DragManager';
-import { buildDemoSuggestionConfig, DEMO_FALLBACK_SPOT, type DemoSuggestionConfig } from './demoSuggestion';
+import {
+  buildDemoSuggestionConfig,
+  DEMO_FALLBACK_SPOT,
+  type DemoSuggestionConfig,
+} from './demoSuggestion';
 import { waitForChartReady } from './ChartReadyDetector';
 import { SpaNavigationObserver } from './SpaNavigationObserver';
 import { markInjected, shouldInject, clearInjectedFlag } from './InjectionGuard';
@@ -131,9 +135,12 @@ export class Bootstrap {
       // not mount. Popup says why." Popup wiring lands with the P2/P7
       // popup work; for now this is loud in the console, which is the
       // channel we do have today (§7.2 — never silent).
-      log.error('chart bridge never became available — widget will not mount (host page left untouched)', {
-        hostId: hostConfig.id,
-      });
+      log.error(
+        'chart bridge never became available — widget will not mount (host page left untouched)',
+        {
+          hostId: hostConfig.id,
+        },
+      );
       return;
     }
 
@@ -202,7 +209,9 @@ export class Bootstrap {
         .then((current) =>
           this.storage.patch({ widgetOffsets: { ...current.widgetOffsets, ...toWrite } }),
         )
-        .catch((error: unknown) => log.warn('failed to persist widget offsets', { error: String(error) }));
+        .catch((error: unknown) =>
+          log.warn('failed to persist widget offsets', { error: String(error) }),
+        );
     }, OFFSET_PERSIST_DEBOUNCE_MS);
   }
 

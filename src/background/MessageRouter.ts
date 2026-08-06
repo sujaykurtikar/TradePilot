@@ -6,7 +6,11 @@
  */
 
 import { isTradePilotRequest } from '../core/messaging/guards';
-import type { ApiReachability, StatusResponse, TradePilotRequest } from '../core/messaging/messages';
+import type {
+  ApiReachability,
+  StatusResponse,
+  TradePilotRequest,
+} from '../core/messaging/messages';
 import type { StorageManager } from '../core/storage/StorageManager';
 import { getLogger } from '../utils/logger';
 

@@ -66,7 +66,9 @@
 }
 .tp-pill--tp:hover,
 .tp-pill--tp:focus-within {
-  box-shadow: var(--tp-shadow-card), 0 0 16px var(--tp-color-tp-glow);
+  box-shadow:
+    var(--tp-shadow-card),
+    0 0 16px var(--tp-color-tp-glow);
 }
 
 .tp-pill--sl {
@@ -74,7 +76,9 @@
 }
 .tp-pill--sl:hover,
 .tp-pill--sl:focus-within {
-  box-shadow: var(--tp-shadow-card), 0 0 16px var(--tp-color-sl-glow);
+  box-shadow:
+    var(--tp-shadow-card),
+    0 0 16px var(--tp-color-sl-glow);
 }
 
 .tp-pill--pending {
@@ -138,7 +142,9 @@
 }
 .tp-card:hover,
 .tp-card:focus-within {
-  box-shadow: var(--tp-shadow-card), 0 0 20px var(--tp-color-accent-glow);
+  box-shadow:
+    var(--tp-shadow-card),
+    0 0 20px var(--tp-color-accent-glow);
 }
 
 .tp-card__header {
@@ -257,7 +263,9 @@
   font-size: 16px;
 }
 .tp-puck:hover {
-  box-shadow: var(--tp-shadow-card), 0 0 16px var(--tp-color-accent-glow);
+  box-shadow:
+    var(--tp-shadow-card),
+    0 0 16px var(--tp-color-accent-glow);
 }
 
 /* ---------- Badges / banners ---------- */

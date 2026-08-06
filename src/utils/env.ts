@@ -15,7 +15,10 @@ export function isChromeRuntimeAvailable(): boolean {
 }
 
 export function hasReducedMotionPreference(): boolean {
-  return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+  return (
+    typeof window !== 'undefined' &&
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+  );
 }
 
 /** Stable per-injection id, used to namespace the postMessage protocol (§4.2/§5.2). */

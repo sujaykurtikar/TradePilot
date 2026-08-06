@@ -44,7 +44,11 @@ export function createLevelPill(initial: LevelPillProps): LevelPillComponent {
   let closeBtn: ReturnType<typeof createIconButton> | null = null;
 
   function render(props: LevelPillProps): void {
-    root.className = ['tp-pill', `tp-pill--${props.variant}`, props.pending ? 'tp-pill--pending' : '']
+    root.className = [
+      'tp-pill',
+      `tp-pill--${props.variant}`,
+      props.pending ? 'tp-pill--pending' : '',
+    ]
       .filter(Boolean)
       .join(' ');
     label.textContent = props.variant.toUpperCase();

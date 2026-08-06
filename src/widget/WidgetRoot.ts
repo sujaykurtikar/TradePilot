@@ -109,7 +109,12 @@ export class WidgetRoot {
       this.demoBadge.textContent = 'DEMO';
     }
 
-    this.host.layer.append(this.tpPill.element, this.suggestionCard.element, this.slPill.element, this.puck);
+    this.host.layer.append(
+      this.tpPill.element,
+      this.suggestionCard.element,
+      this.slPill.element,
+      this.puck,
+    );
     if (this.demoBadge) this.host.layer.appendChild(this.demoBadge);
 
     this.dragManager.bind(TARGET_TP, this.tpPill.handleElement);

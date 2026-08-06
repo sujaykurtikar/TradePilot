@@ -14,7 +14,9 @@ export interface Destroyable {
   destroy(): void;
 }
 
-export function createIconButton(opts: IconButtonOptions): { element: HTMLButtonElement } & Destroyable {
+export function createIconButton(
+  opts: IconButtonOptions,
+): { element: HTMLButtonElement } & Destroyable {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = ['tp-icon-btn', opts.className].filter(Boolean).join(' ');

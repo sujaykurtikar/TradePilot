@@ -23,14 +23,7 @@
 export const PROTOCOL_NAMESPACE = '__tradepilot_bridge__' as const;
 
 export type BridgeMethodName =
-  | 'isAvailable'
-  | 'probe'
-  | 'priceToY'
-  | 'yToPrice'
-  | 'timeToX'
-  | 'lastBar'
-  | 'symbol'
-  | 'paneRect';
+  'isAvailable' | 'probe' | 'priceToY' | 'yToPrice' | 'timeToX' | 'lastBar' | 'symbol' | 'paneRect';
 
 interface EnvelopeBase {
   readonly __ns: typeof PROTOCOL_NAMESPACE;

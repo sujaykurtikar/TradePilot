@@ -91,14 +91,24 @@ function main(): void {
       } catch (e) {
         ok = false;
         error = String(e);
-        log.error('bridge dispatch threw — this should never happen (all bridge methods must be guarded)', {
-          method: req.method,
-          error,
-        });
+        log.error(
+          'bridge dispatch threw — this should never happen (all bridge methods must be guarded)',
+          {
+            method: req.method,
+            error,
+          },
+        );
       }
       postProtocolMessage(
         ok
-          ? { __ns: PROTOCOL_NAMESPACE, nonce: acceptedNonce, kind: 'response', id: req.id, ok, result }
+          ? {
+              __ns: PROTOCOL_NAMESPACE,
+              nonce: acceptedNonce,
+              kind: 'response',
+              id: req.id,
+              ok,
+              result,
+            }
           : {
               __ns: PROTOCOL_NAMESPACE,
               nonce: acceptedNonce,

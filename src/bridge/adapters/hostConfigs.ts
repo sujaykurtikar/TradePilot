@@ -51,7 +51,9 @@ export const KOTAK_NEO_CONFIG: InternalApiHostConfig = {
   },
 };
 
-export function resolveHostConfigForLocation(loc: Location = window.location): InternalApiHostConfig | null {
+export function resolveHostConfigForLocation(
+  loc: Location = window.location,
+): InternalApiHostConfig | null {
   if (loc.hostname === 'www.tradingview.com') return TRADINGVIEW_SITE_CONFIG;
   if (loc.hostname === 'trade.kotakneo.com') return KOTAK_NEO_CONFIG;
   return null;

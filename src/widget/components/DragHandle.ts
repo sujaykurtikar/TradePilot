@@ -30,7 +30,10 @@ export interface DragHandleCallbacks {
 
 const KEY_NUDGE_PX = 4;
 
-export function attachDragHandle(element: HTMLElement, callbacks: DragHandleCallbacks): Destroyable {
+export function attachDragHandle(
+  element: HTMLElement,
+  callbacks: DragHandleCallbacks,
+): Destroyable {
   let dragging = false;
   let startX = 0;
   let startY = 0;

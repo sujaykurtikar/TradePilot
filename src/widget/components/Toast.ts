@@ -9,7 +9,11 @@
 
 const DEFAULT_DURATION_MS = 4000;
 
-export function showToast(layer: HTMLElement, message: string, durationMs = DEFAULT_DURATION_MS): void {
+export function showToast(
+  layer: HTMLElement,
+  message: string,
+  durationMs = DEFAULT_DURATION_MS,
+): void {
   const toast = document.createElement('div');
   toast.className = 'tp-toast tp-mount-animate';
   toast.setAttribute('role', 'status');

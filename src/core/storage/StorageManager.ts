@@ -38,7 +38,10 @@ export class StorageManager {
 
   /** Fires on ANY change to our key, from ANY context (popup, content, background) — keeps them in sync. */
   onChange(cb: (next: StorageSchema) => void): () => void {
-    const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string): void => {
+    const listener = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string,
+    ): void => {
       if (areaName !== 'local') return;
       const change = changes[STORAGE_KEY];
       if (change === undefined) return;

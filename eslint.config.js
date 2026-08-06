@@ -46,7 +46,10 @@ export default [
     rules: {
       ...tsPlugin.configs['recommended'].rules,
       ...tsPlugin.configs['recommended-requiring-type-checking']?.rules,
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
       '@typescript-eslint/consistent-type-imports': 'error',
       'no-restricted-globals': ['error', ...RESTRICTED_GLOBALS],
       // .catch(() => {}) is banned project-wide — §7.2 "No silent failures".

@@ -134,7 +134,14 @@ export class TradingViewInternalApiBridge implements ChartBridge {
   paneRect(): PaneRect | null {
     const rect = this.resolvePaneRect();
     if (rect == null) return null;
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, right: rect.right, bottom: rect.bottom };
+    return {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      right: rect.right,
+      bottom: rect.bottom,
+    };
   }
 
   priceToY(price: number): number | null {
@@ -233,7 +240,9 @@ export class TradingViewInternalApiBridge implements ChartBridge {
       mkCheck(
         'chain-resolves',
         handles !== null,
-        handles === null ? 'activeChart()/chartWidget()/paneWidgets chain did not resolve' : undefined,
+        handles === null
+          ? 'activeChart()/chartWidget()/paneWidgets chain did not resolve'
+          : undefined,
       ),
     );
 
@@ -245,19 +254,26 @@ export class TradingViewInternalApiBridge implements ChartBridge {
 
       const yFromPrice = bar !== null ? this.priceToY(bar.close) : null;
       const priceToYInPane =
-        yFromPrice !== null && rect !== null && yFromPrice >= rect.y - 1 && yFromPrice <= rect.y + rect.height + 1;
+        yFromPrice !== null &&
+        rect !== null &&
+        yFromPrice >= rect.y - 1 &&
+        yFromPrice <= rect.y + rect.height + 1;
       checks.push(
         mkCheck(
           'priceToY-in-pane',
           priceToYInPane,
-          !priceToYInPane ? `priceToY(lastClose)=${String(yFromPrice)} outside pane rect` : undefined,
+          !priceToYInPane
+            ? `priceToY(lastClose)=${String(yFromPrice)} outside pane rect`
+            : undefined,
         ),
       );
 
       let roundTripOk = false;
       if (yFromPrice !== null && bar !== null) {
         const backToPrice = this.yToPrice(yFromPrice);
-        roundTripOk = backToPrice !== null && Math.abs(backToPrice - bar.close) < Math.max(bar.close * 0.001, 0.5);
+        roundTripOk =
+          backToPrice !== null &&
+          Math.abs(backToPrice - bar.close) < Math.max(bar.close * 0.001, 0.5);
       }
       checks.push(
         mkCheck(
@@ -269,12 +285,17 @@ export class TradingViewInternalApiBridge implements ChartBridge {
 
       const xFromTime = bar !== null ? this.timeToX(bar.time) : null;
       const timeToXInPane =
-        xFromTime !== null && rect !== null && xFromTime >= rect.x - 1 && xFromTime <= rect.x + rect.width + 1;
+        xFromTime !== null &&
+        rect !== null &&
+        xFromTime >= rect.x - 1 &&
+        xFromTime <= rect.x + rect.width + 1;
       checks.push(
         mkCheck(
           'timeToX-in-pane',
           timeToXInPane,
-          !timeToXInPane ? `timeToX(lastBar.time)=${String(xFromTime)} outside pane rect` : undefined,
+          !timeToXInPane
+            ? `timeToX(lastBar.time)=${String(xFromTime)} outside pane rect`
+            : undefined,
         ),
       );
 

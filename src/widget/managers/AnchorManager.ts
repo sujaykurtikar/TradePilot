@@ -135,7 +135,12 @@ export class AnchorManager {
     const finalY = y + offset.dy;
 
     const last = this.lastApplied.get(target.id);
-    if (last !== undefined && last.visible && nearlyEqual(finalX, last.x) && nearlyEqual(finalY, last.y)) {
+    if (
+      last !== undefined &&
+      last.visible &&
+      nearlyEqual(finalX, last.x) &&
+      nearlyEqual(finalY, last.y)
+    ) {
       return; // sub-pixel — skip the DOM write (§R-P4a performance budget)
     }
 

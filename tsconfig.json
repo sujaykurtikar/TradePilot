@@ -22,5 +22,5 @@
     },
     "noEmit": true
   },
-  "include": ["src", "popup", "scripts", "vitest.config.ts", "eslint.config.js"]
+  "include": ["src", "popup", "scripts", "tests", "vitest.config.ts", "eslint.config.js"]
 }

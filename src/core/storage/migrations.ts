@@ -38,7 +38,9 @@ export function migrateStorage(raw: unknown): StorageSchema {
   }
 
   if (currentVersion !== CURRENT_SCHEMA_VERSION) {
-    log.warn('stored schema version unrecognized — resetting to defaults', { found: currentVersion });
+    log.warn('stored schema version unrecognized — resetting to defaults', {
+      found: currentVersion,
+    });
     return DEFAULT_STORAGE;
   }
 

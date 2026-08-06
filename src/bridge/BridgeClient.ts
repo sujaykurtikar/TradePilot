@@ -24,7 +24,14 @@
  * must not leave the widget showing a frozen last-good coordinate forever.
  */
 
-import type { ChartBridge, ChartBridgeId, ChartChangeReason, LastBar, PaneRect, ProbeResult } from './ChartBridge';
+import type {
+  ChartBridge,
+  ChartBridgeId,
+  ChartChangeReason,
+  LastBar,
+  PaneRect,
+  ProbeResult,
+} from './ChartBridge';
 import { generateSessionNonce } from '../utils/env';
 import {
   PROTOCOL_NAMESPACE,
@@ -153,7 +160,13 @@ export class BridgeClient implements ChartBridge {
       cached ?? {
         bridgeId: this.id,
         timestampMs: Date.now(),
-        checks: [{ name: 'awaiting-first-response', passed: false, detail: 'no probe response cached yet' }],
+        checks: [
+          {
+            name: 'awaiting-first-response',
+            passed: false,
+            detail: 'no probe response cached yet',
+          },
+        ],
         overall: 'unavailable',
       }
     );
