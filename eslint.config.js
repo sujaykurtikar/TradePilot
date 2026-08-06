@@ -51,7 +51,10 @@ export default [
       'no-restricted-globals': ['error', ...RESTRICTED_GLOBALS],
       // .catch(() => {}) is banned project-wide — §7.2 "No silent failures".
       'no-empty': ['error', { allowEmptyCatch: false }],
-      eqeqeq: ['error', 'always'],
+      // 'smart' still bans loose == everywhere EXCEPT `x == null`, the
+      // conventional idiom for "null or undefined" — used throughout for
+      // optional bridge/API values.
+      eqeqeq: ['error', 'smart'],
       'no-console': ['warn', { allow: ['warn', 'error'] }],
     },
   },
@@ -63,9 +66,39 @@ export default [
     },
   },
   {
+    // src/bridge/adapters/** talks to undocumented, minified, unversioned
+    // vendor objects (§4.1: "the widget class came back as `Hp`") — there
+    // is no real type to give them. `any` + unsafe-* access is the
+    // intentional, quarantined shape of this one directory (§5.1's whole
+    // point: contain the untyped surface to one replaceable place), not a
+    // lapse in rigor. Every access is still wrapped in `guarded()` so a
+    // shape mismatch is a caught, logged null — runtime safety comes from
+    // that, not from the type checker.
+    files: ['src/bridge/adapters/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+    },
+  },
+  {
+    // The logger's whole job is to be the one console wrapper; everything
+    // else must go through it (§7.8).
+    files: ['src/utils/logger.ts'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+  {
     files: ['tests/**/*.ts', '**/*.test.ts'],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
     },
   },
   prettierConfig,
