@@ -18,6 +18,7 @@ import { StateManager } from './managers/StateManager';
 import { ShadowHost } from './ShadowHost';
 import { createLevelPill, type LevelPillComponent } from './components/LevelPill';
 import { createSuggestionCard, type SuggestionCardComponent } from './components/SuggestionCard';
+import { showToast } from './components/Toast';
 import { getLogger } from '../utils/logger';
 
 const log = getLogger('widget:root');
@@ -142,6 +143,11 @@ export class WidgetRoot {
       staleReason: next.staleReason ?? null,
       onTrade: next.onTrade,
     });
+  }
+
+  /** Shows a transient message inside this widget's own Shadow DOM layer (§6.0's Trade-click confirm stub, and reusable by P6's success/error notices). */
+  showToast(message: string): void {
+    showToast(this.host.layer, message);
   }
 
   async mount(): Promise<void> {

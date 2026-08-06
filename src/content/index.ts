@@ -1,0 +1,37 @@
+/**
+ * ISOLATED-world entry point (IMPLEMENTATION_PLAN.md §5.1). Injected by
+ * the manifest's `world: "ISOLATED"` content-script entries
+ * (src/manifest.ts). Everything real lives in Bootstrap.ts — kept this
+ * file to just wiring so the injection entry point itself never needs to
+ * change as the lifecycle grows.
+ */
+
+import { Bootstrap } from './Bootstrap';
+import { getLogger } from '../utils/logger';
+
+const log = getLogger('content:index');
+
+const bootstrap = new Bootstrap();
+
+bootstrap.start().catch((error: unknown) => {
+  // Top-level catch is NOT the §7.2 "silent failure" pattern this project
+  // bans — it's the required backstop at the one place nothing above it
+  // can catch a throw. It still logs loudly, which is the actual
+  // requirement (§7.2: "every failure surfaces in the UI, logs with
+  // context, or trips the degradation path").
+  log.error('bootstrap failed', { error: String(error) });
+});
+
+// §7.4/§7.5: disabling the extension must leave the page exactly as
+// found. chrome.runtime provides no direct "extension disabled" content-
+// script event, but the port disconnecting is the standard signal that
+// the extension context has gone away (disable, reload, or uninstall).
+try {
+  const port = chrome.runtime.connect({ name: 'tradepilot-content-lifecycle' });
+  port.onDisconnect.addListener(() => {
+    log.info('extension context invalidated — tearing down');
+    bootstrap.destroy();
+  });
+} catch (error) {
+  log.debug('could not establish lifecycle port (non-fatal)', { error: String(error) });
+}
