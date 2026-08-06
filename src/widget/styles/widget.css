@@ -1,0 +1,375 @@
+/**
+ * Widget component styles (§P3/§R-P3). Key rules encoded here, not just in
+ * comments:
+ *   - the outer layer is pointer-events: none; only interactive children
+ *     opt back in with pointer-events: auto — the widget must never block
+ *     chart interaction (§R-P3).
+ *   - everything positioned is transform: translate3d only (set inline by
+ *     AnchorManager/DragManager) — top/left would force host layout.
+ *   - tabular-nums everywhere a price renders, so digits don't jitter.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+.tp-layer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  font-family: var(--tp-font-family);
+  color: var(--tp-color-text);
+  z-index: 2147483000;
+}
+
+.tp-positioned {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.tp-positioned--hidden {
+  visibility: hidden;
+}
+
+/* §7.1: "dim + stale + Trade disabled" when data is > 15s old or is_fresh
+   is false. A visual cue that what's shown shouldn't be fully trusted —
+   distinct from the R-OCO banner (a safety alert) and never applied to
+   it or to the manual/demo badges. */
+.tp-dimmed {
+  opacity: 0.55;
+  transition: opacity var(--tp-duration-medium) var(--tp-easing);
+}
+
+/* ---------- Level pill (TP / SL) ---------- */
+
+.tp-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tp-space-2);
+  padding: var(--tp-space-1) var(--tp-space-2);
+  border-radius: var(--tp-radius-md);
+  background: var(--tp-color-bg);
+  backdrop-filter: var(--tp-blur);
+  -webkit-backdrop-filter: var(--tp-blur);
+  border: 1px solid var(--tp-color-border);
+  box-shadow: var(--tp-shadow-card);
+  pointer-events: auto;
+  transition:
+    box-shadow var(--tp-duration-fast) var(--tp-easing),
+    transform var(--tp-duration-fast) var(--tp-easing);
+}
+
+.tp-pill:hover,
+.tp-pill:focus-within {
+  transform: scale(1.02);
+}
+
+.tp-pill--tp {
+  border-color: color-mix(in srgb, var(--tp-color-tp) 45%, var(--tp-color-border));
+}
+.tp-pill--tp:hover,
+.tp-pill--tp:focus-within {
+  box-shadow:
+    var(--tp-shadow-card),
+    0 0 16px var(--tp-color-tp-glow);
+}
+
+.tp-pill--sl {
+  border-color: color-mix(in srgb, var(--tp-color-sl) 45%, var(--tp-color-border));
+}
+.tp-pill--sl:hover,
+.tp-pill--sl:focus-within {
+  box-shadow:
+    var(--tp-shadow-card),
+    0 0 16px var(--tp-color-sl-glow);
+}
+
+.tp-pill--pending {
+  opacity: 0.75;
+}
+.tp-pill--pending .tp-pill__value::after {
+  content: '…';
+  opacity: 0.7;
+}
+
+.tp-pill__handle {
+  cursor: grab;
+  color: var(--tp-color-text-dim);
+  font-size: var(--tp-font-size-md);
+  line-height: 1;
+  padding: 0 var(--tp-space-1);
+  touch-action: none;
+  user-select: none;
+}
+.tp-pill__handle:active {
+  cursor: grabbing;
+}
+
+.tp-pill__label {
+  font-size: var(--tp-font-size-sm);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+.tp-pill--tp .tp-pill__label {
+  color: var(--tp-color-tp);
+}
+.tp-pill--sl .tp-pill__label {
+  color: var(--tp-color-sl);
+}
+
+.tp-pill__value {
+  font-size: var(--tp-font-size-md);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* ---------- Suggestion card ---------- */
+
+.tp-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tp-space-1);
+  padding: var(--tp-space-2) var(--tp-space-3);
+  border-radius: var(--tp-radius-lg);
+  background: var(--tp-color-bg);
+  backdrop-filter: var(--tp-blur);
+  -webkit-backdrop-filter: var(--tp-blur);
+  border: 1px solid color-mix(in srgb, var(--tp-color-accent) 40%, var(--tp-color-border));
+  box-shadow: var(--tp-shadow-card);
+  pointer-events: auto;
+  min-width: 168px;
+  transition:
+    box-shadow var(--tp-duration-fast) var(--tp-easing),
+    transform var(--tp-duration-fast) var(--tp-easing);
+}
+.tp-card:hover,
+.tp-card:focus-within {
+  box-shadow:
+    var(--tp-shadow-card),
+    0 0 20px var(--tp-color-accent-glow);
+}
+
+.tp-card__header {
+  display: flex;
+  align-items: center;
+  gap: var(--tp-space-2);
+}
+
+.tp-card__title {
+  font-size: var(--tp-font-size-sm);
+  font-weight: 700;
+  color: var(--tp-color-accent);
+  letter-spacing: 0.03em;
+  flex: 1;
+}
+
+.tp-card__body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tp-space-3);
+}
+
+.tp-card__symbol {
+  font-size: var(--tp-font-size-lg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.tp-card__symbol-sub {
+  font-size: var(--tp-font-size-sm);
+  color: var(--tp-color-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.tp-card__trade-btn {
+  appearance: none;
+  border: none;
+  border-radius: var(--tp-radius-sm);
+  padding: var(--tp-space-2) var(--tp-space-3);
+  background: var(--tp-color-accent);
+  color: #fff;
+  font-size: var(--tp-font-size-md);
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    filter var(--tp-duration-fast) var(--tp-easing),
+    transform var(--tp-duration-fast) var(--tp-easing);
+}
+.tp-card__trade-btn:hover {
+  filter: brightness(1.1);
+}
+.tp-card__trade-btn:active {
+  transform: scale(0.97);
+}
+.tp-card__trade-btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+.tp-card__trade-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: none;
+  transform: none;
+}
+
+.tp-card__stale {
+  font-size: var(--tp-font-size-sm);
+  color: var(--tp-color-sl);
+  font-weight: 600;
+}
+
+/* ---------- Trade confirm view (§P6) ---------- */
+
+.tp-card__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tp-space-2);
+}
+
+.tp-card__confirm-summary {
+  font-size: var(--tp-font-size-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+.tp-card__confirm-actions {
+  display: flex;
+  gap: var(--tp-space-2);
+  justify-content: flex-end;
+}
+
+.tp-card__cancel-btn {
+  width: auto;
+  height: auto;
+  padding: var(--tp-space-2) var(--tp-space-3);
+  border: 1px solid var(--tp-color-border);
+  border-radius: var(--tp-radius-sm);
+  font-size: var(--tp-font-size-md);
+}
+
+/* ---------- Shared: close button ---------- */
+
+.tp-icon-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--tp-color-text-dim);
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+}
+.tp-icon-btn:hover {
+  color: var(--tp-color-text);
+  background: rgba(255, 255, 255, 0.08);
+}
+.tp-icon-btn:focus-visible {
+  outline: 2px solid var(--tp-color-accent);
+  outline-offset: 1px;
+}
+
+/* ---------- Collapsed puck ---------- */
+
+.tp-puck {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--tp-color-bg);
+  backdrop-filter: var(--tp-blur);
+  -webkit-backdrop-filter: var(--tp-blur);
+  border: 1px solid var(--tp-color-border);
+  box-shadow: var(--tp-shadow-card);
+  cursor: pointer;
+  pointer-events: auto;
+  font-size: 16px;
+}
+.tp-puck:hover {
+  box-shadow:
+    var(--tp-shadow-card),
+    0 0 16px var(--tp-color-accent-glow);
+}
+
+/* ---------- Badges / banners ---------- */
+
+.tp-badge-demo {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  background: var(--tp-color-demo-bg);
+  color: var(--tp-color-demo-text);
+  font-size: var(--tp-font-size-sm);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border-radius: var(--tp-radius-sm);
+  pointer-events: none;
+  z-index: 2147483001;
+}
+
+/* §R-P2 manual-mode badge: "chart link unavailable" — coordinate math
+   failed but values are still shown and still tradeable. Amber, distinct
+   from the DEMO badge's corner and the R-OCO banner's red. */
+.tp-badge-manual {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--tp-color-demo-bg);
+  color: var(--tp-color-demo-text);
+  font-size: var(--tp-font-size-sm);
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: var(--tp-radius-sm);
+  pointer-events: none;
+  z-index: 2147483001;
+  max-width: 260px;
+}
+.tp-badge-manual__reason {
+  font-weight: 400;
+  opacity: 0.85;
+  font-size: 10px;
+}
+
+/* R-OCO: unmissable, not a subtle tint. Reserved for wiring in P6/P6t. */
+.tp-banner-unprotected {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: var(--tp-color-warning-bg);
+  color: var(--tp-color-warning-text);
+  font-size: var(--tp-font-size-md);
+  font-weight: 700;
+  text-align: center;
+  padding: var(--tp-space-2);
+  pointer-events: none;
+  z-index: 2147483002;
+}
+
+.tp-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

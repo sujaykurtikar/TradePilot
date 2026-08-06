@@ -1,0 +1,114 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 260px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: #14161f;
+  color: #e9ecf5;
+}
+
+.popup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+}
+
+.popup__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.popup__logo {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.popup__version {
+  font-size: 11px;
+  color: #9aa1b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.popup__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.popup__toggle-label {
+  cursor: pointer;
+}
+
+.popup__toggle {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.popup__status-pill {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.03em;
+}
+
+.popup__status-pill--unknown {
+  background: rgba(154, 161, 184, 0.2);
+  color: #9aa1b8;
+}
+
+.popup__status-pill--reachable {
+  background: rgba(76, 175, 122, 0.2);
+  color: #4caf7a;
+}
+
+.popup__status-pill--unreachable {
+  background: rgba(224, 85, 95, 0.2);
+  color: #e0555f;
+}
+
+.popup__button {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e9ecf5;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  width: 100%;
+}
+.popup__button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.popup__button:active {
+  transform: scale(0.98);
+}
+
+.popup__hint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: #9aa1b8;
+  line-height: 1.4;
+}
+
+.popup__warning {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(224, 85, 95, 0.15);
+  color: #e0555f;
+  font-size: 11px;
+  line-height: 1.4;
+}

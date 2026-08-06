@@ -1,0 +1,122 @@
+/**
+ * Typed manifest source of truth (IMPLEMENTATION_PLAN.md §5.3, §6/P1).
+ *
+ * Built to dist/manifest.json by scripts/build.mjs. Keeping this as TS
+ * (instead of hand-edited JSON) means a typo in a permission/match-pattern
+ * key is a type error at build time, not a silently-ignored key at runtime.
+ *
+ * host_permissions include our own FastAPI backend — required so the
+ * service worker's fetches bypass CORS (§5.1).
+ */
+
+interface ContentScriptEntry {
+  matches: string[];
+  js: string[];
+  world: 'ISOLATED' | 'MAIN';
+  all_frames?: boolean;
+  match_origin_as_fallback?: boolean;
+  run_at?: 'document_start' | 'document_end' | 'document_idle';
+}
+
+interface TradePilotManifest {
+  manifest_version: 3;
+  name: string;
+  version: string;
+  description: string;
+  minimum_chrome_version: string;
+  action: {
+    default_popup: string;
+    default_icon: Record<string, string>;
+  };
+  icons: Record<string, string>;
+  permissions: string[];
+  host_permissions: string[];
+  background: {
+    service_worker: string;
+    type: 'module';
+  };
+  content_scripts: ContentScriptEntry[];
+}
+
+// Our own backend — see IMPLEMENTATION_PLAN.md §10 Q3. Defaults to
+// same-machine FastAPI (127.0.0.1:8000) per the plan's stated assumption;
+// revisit if the API ever runs on a different host.
+const OUR_API_ORIGIN = 'http://127.0.0.1:8000/*';
+
+const manifest: TradePilotManifest = {
+  manifest_version: 3,
+  name: 'TradePilot',
+  version: '0.1.0',
+  description:
+    'On-chart trade widget for TradingView and Kotak Neo — suggested entry, TP/SL, one-click trade through your own wrapper API.',
+  minimum_chrome_version: '111',
+  action: {
+    default_popup: 'popup.html',
+    default_icon: {
+      '16': 'icons/16.png',
+      '32': 'icons/32.png',
+      '48': 'icons/48.png',
+      '128': 'icons/128.png',
+    },
+  },
+  icons: {
+    '16': 'icons/16.png',
+    '32': 'icons/32.png',
+    '48': 'icons/48.png',
+    '128': 'icons/128.png',
+  },
+  // 'alarms' is P5's service-worker keepalive (background/index.ts) —
+  // MV3 workers can be terminated after ~30s idle; a periodic alarm is
+  // the documented way to get woken back up reliably.
+  permissions: ['storage', 'scripting', 'activeTab', 'alarms'],
+  host_permissions: [
+    'https://*.tradingview.com/*',
+    'https://*.kotaksecurities.com/*',
+    'https://trade.kotakneo.com/*',
+    OUR_API_ORIGIN,
+  ],
+  background: {
+    service_worker: 'background.js',
+    type: 'module',
+  },
+  content_scripts: [
+    // TradingView.com — same-document chart, no iframe nesting (§4.1).
+    {
+      matches: ['https://www.tradingview.com/chart/*'],
+      world: 'ISOLATED',
+      js: ['content.js'],
+      run_at: 'document_idle',
+    },
+    {
+      matches: ['https://www.tradingview.com/chart/*'],
+      world: 'MAIN',
+      js: ['bridge.js'],
+      run_at: 'document_idle',
+    },
+    // Kotak Neo — chart lives in a nested blob: iframe (§4.2). Both scripts
+    // must target it directly; all_frames + match_origin_as_fallback are
+    // the two documented MV3 mechanisms for reaching a blob:-scheme frame
+    // keyed on its creating origin. Wiring/verification is P7 — declared
+    // here now so P1's manifest matches the plan's final shape, but not
+    // exercised until P7 confirms the content script actually lands in the
+    // innermost frame rather than the middle static-HTML one.
+    {
+      matches: ['https://trade.kotakneo.com/*', 'blob:https://trade.kotakneo.com/*'],
+      all_frames: true,
+      match_origin_as_fallback: true,
+      world: 'ISOLATED',
+      js: ['content.js'],
+      run_at: 'document_idle',
+    },
+    {
+      matches: ['https://trade.kotakneo.com/*', 'blob:https://trade.kotakneo.com/*'],
+      all_frames: true,
+      match_origin_as_fallback: true,
+      world: 'MAIN',
+      js: ['bridge.js'],
+      run_at: 'document_idle',
+    },
+  ],
+};
+
+export default manifest;

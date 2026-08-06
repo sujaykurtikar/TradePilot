@@ -1,0 +1,46 @@
+/**
+ * Design tokens (IMPLEMENTATION_PLAN.md §P3: "Shadow DOM, CSS custom
+ * properties, dark theme, blur, rounded, glow on hover"). Loaded into the
+ * Shadow DOM's own stylesheet — never leaks into the host page (§7.4).
+ */
+:host {
+  --tp-color-bg: rgba(20, 22, 34, 0.82);
+  --tp-color-bg-solid: #14161f;
+  --tp-color-border: rgba(255, 255, 255, 0.1);
+  --tp-color-text: #e9ecf5;
+  --tp-color-text-dim: #9aa1b8;
+  --tp-color-tp: #4caf7a;
+  --tp-color-tp-glow: rgba(76, 175, 122, 0.45);
+  --tp-color-sl: #e0555f;
+  --tp-color-sl-glow: rgba(224, 85, 95, 0.45);
+  --tp-color-accent: #5b8cff;
+  --tp-color-accent-glow: rgba(91, 140, 255, 0.45);
+  --tp-color-warning-bg: #7a1f24;
+  --tp-color-warning-text: #ffe4e6;
+  --tp-color-demo-bg: #8a5a10;
+  --tp-color-demo-text: #fff3d6;
+
+  --tp-radius-sm: 6px;
+  --tp-radius-md: 10px;
+  --tp-radius-lg: 14px;
+
+  --tp-space-1: 4px;
+  --tp-space-2: 8px;
+  --tp-space-3: 12px;
+  --tp-space-4: 16px;
+
+  --tp-font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --tp-font-size-sm: 11px;
+  --tp-font-size-md: 13px;
+  --tp-font-size-lg: 15px;
+
+  --tp-shadow-card: 0 4px 24px rgba(0, 0, 0, 0.35);
+  --tp-blur: blur(10px);
+
+  --tp-duration-fast: 120ms;
+  --tp-duration-medium: 300ms;
+  --tp-easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  color-scheme: dark;
+}
