@@ -13,7 +13,7 @@
 
 import type { ChartBridge } from '../bridge/ChartBridge';
 import { AnchorManager } from './managers/AnchorManager';
-import { DragManager } from './managers/DragManager';
+import { DragManager, type Offset } from './managers/DragManager';
 import { StateManager } from './managers/StateManager';
 import { ShadowHost } from './ShadowHost';
 import { createLevelPill, type LevelPillComponent } from './components/LevelPill';
@@ -40,6 +40,11 @@ export interface WidgetRootOptions {
   readonly suggestion: WidgetSuggestionData;
   /** §6.0: Day-1 build must carry a visible "DEMO" badge so it's never mistaken for the hardened version. */
   readonly demoMode: boolean;
+  /** §P3 "position and collapse state persisted" — hydration + change hooks, wired to chrome.storage by content/Bootstrap.ts. */
+  readonly initialCollapsed?: boolean;
+  readonly initialOffsets?: Readonly<Record<string, Offset>>;
+  readonly onOffsetChange?: (elementId: string, offset: Offset) => void;
+  readonly onCollapsedChange?: (collapsed: boolean) => void;
 }
 
 const TARGET_TP = 'level-pill-tp';
@@ -50,7 +55,7 @@ export class WidgetRoot {
   private readonly host: ShadowHost;
   private readonly dragManager = new DragManager();
   private readonly anchorManager: AnchorManager;
-  private readonly stateManager = new StateManager();
+  private readonly stateManager: StateManager;
   private readonly tpPill: LevelPillComponent;
   private readonly slPill: LevelPillComponent;
   private readonly suggestionCard: SuggestionCardComponent;
@@ -59,10 +64,23 @@ export class WidgetRoot {
   private suggestion: WidgetSuggestionData;
   private unsubscribeState: (() => void) | null = null;
 
+  private readonly onCollapsedChange: ((collapsed: boolean) => void) | null;
+
   constructor(opts: WidgetRootOptions) {
     this.suggestion = opts.suggestion;
     this.host = new ShadowHost();
     this.anchorManager = new AnchorManager(opts.bridge, this.dragManager);
+    this.stateManager = new StateManager({ collapsed: opts.initialCollapsed ?? false });
+    this.onCollapsedChange = opts.onCollapsedChange ?? null;
+
+    if (opts.initialOffsets) {
+      for (const [id, offset] of Object.entries(opts.initialOffsets)) {
+        this.dragManager.hydrate(id, offset);
+      }
+    }
+    if (opts.onOffsetChange) {
+      this.dragManager.onChange(opts.onOffsetChange);
+    }
 
     this.tpPill = createLevelPill({ variant: 'tp', price: opts.suggestion.tp });
     this.slPill = createLevelPill({ variant: 'sl', price: opts.suggestion.sl });
@@ -117,7 +135,10 @@ export class WidgetRoot {
       pinRight: true,
     });
 
-    this.unsubscribeState = this.stateManager.subscribe((state) => this.renderCollapseState(state.collapsed));
+    this.unsubscribeState = this.stateManager.subscribe((state) => {
+      this.renderCollapseState(state.collapsed);
+      this.onCollapsedChange?.(state.collapsed);
+    });
     this.renderCollapseState(this.stateManager.get().collapsed);
   }
 
@@ -129,6 +150,21 @@ export class WidgetRoot {
     display(this.slPill.element, !collapsed);
     display(this.suggestionCard.element, !collapsed);
     display(this.puck, collapsed);
+  }
+
+  /** Applies a collapse state that originated elsewhere (popup, another tab's storage write) without re-announcing it via onCollapsedChange — that write already happened. */
+  setCollapsedExternal(collapsed: boolean): void {
+    if (this.stateManager.get().collapsed === collapsed) return;
+    this.renderCollapseState(collapsed);
+    // Bypass StateManager.set()'s subscriber notification path (which
+    // would call onCollapsedChange and write storage right back) by
+    // updating state directly — this value already came from storage.
+    this.stateManager.hydrate({ collapsed });
+  }
+
+  /** Popup's "reset position" (§P1) — clears all drag offsets; AnchorManager picks up the zeroed offsets next frame automatically. */
+  resetOffsets(): void {
+    this.dragManager.resetAll();
   }
 
   /** Called by content/Bootstrap.ts when new suggestion data arrives (hardcoded for Day-1, live from P5). */

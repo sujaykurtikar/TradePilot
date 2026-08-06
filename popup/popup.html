@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>TradePilot</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header class="popup__header">
+        <span class="popup__logo">⚡ TradePilot</span>
+        <span class="popup__version" id="version">v0.0.0</span>
+      </header>
+
+      <section class="popup__row">
+        <label class="popup__toggle-label" for="enabled-toggle">Enabled</label>
+        <input type="checkbox" id="enabled-toggle" class="popup__toggle" />
+      </section>
+
+      <section class="popup__row">
+        <span>API status</span>
+        <span id="api-status" class="popup__status-pill popup__status-pill--unknown">checking…</span>
+      </section>
+
+      <section class="popup__row">
+        <button type="button" id="reset-position" class="popup__button">Reset widget position</button>
+      </section>
+
+      <p class="popup__hint" id="demo-hint">
+        Day-1 demo build — hardcoded suggestion, no live order placement.
+      </p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

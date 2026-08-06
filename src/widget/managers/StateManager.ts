@@ -29,6 +29,11 @@ export class StateManager {
     for (const listener of this.listeners) listener(this.state);
   }
 
+  /** Like set(), but silent — for applying a value that already originated from an external source (e.g. a storage change), where re-notifying would just write it right back. */
+  hydrate(patch: Partial<WidgetUiState>): void {
+    this.state = { ...this.state, ...patch };
+  }
+
   subscribe(listener: (state: WidgetUiState) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

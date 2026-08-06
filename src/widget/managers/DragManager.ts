@@ -71,6 +71,18 @@ export class DragManager {
     this.offsets.set(elementId, offset);
   }
 
+  /**
+   * Clears all offsets back to zero (popup's "reset position", §P1). Does
+   * NOT invoke onChange — the caller (WidgetRoot.resetOffsets, driven by
+   * an external chrome.storage change from the popup) already knows
+   * storage was reset by whoever triggered this, so re-announcing it back
+   * out would just be a redundant write.
+   */
+  resetAll(): void {
+    this.offsets.clear();
+    this.dragStartOffsets.clear();
+  }
+
   destroy(): void {
     for (const handle of this.handles) handle.destroy();
     this.handles.length = 0;

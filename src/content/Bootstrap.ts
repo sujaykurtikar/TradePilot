@@ -12,16 +12,20 @@
 import { createBridgeClient, type BridgeClient } from '../bridge/BridgeClient';
 import { resolveHostConfigForLocation } from '../bridge/adapters/hostConfigs';
 import { WidgetRoot } from '../widget/WidgetRoot';
+import type { Offset } from '../widget/managers/DragManager';
 import { buildDemoSuggestionConfig, DEMO_FALLBACK_SPOT, type DemoSuggestionConfig } from './demoSuggestion';
 import { waitForChartReady } from './ChartReadyDetector';
 import { SpaNavigationObserver } from './SpaNavigationObserver';
 import { markInjected, shouldInject, clearInjectedFlag } from './InjectionGuard';
+import { StorageManager } from '../core/storage/StorageManager';
+import type { StorageSchema } from '../core/storage/schema';
 import { getLogger } from '../utils/logger';
 
 const log = getLogger('content:bootstrap');
 
 const LAST_BAR_GRACE_MS = 5000;
 const LAST_BAR_POLL_MS = 250;
+const OFFSET_PERSIST_DEBOUNCE_MS = 400;
 
 async function waitForFirstBar(bridge: BridgeClient, graceMs: number): Promise<number | null> {
   const startedAt = Date.now();
@@ -48,6 +52,13 @@ export class Bootstrap {
   private disposed = false;
   private runToken = 0;
 
+  private readonly storage = new StorageManager();
+  private storageUnsubscribe: (() => void) | null = null;
+  private lastKnownEnabled = true;
+  private offsetsWereEmpty = true;
+  private pendingOffsets: Record<string, Offset> = {};
+  private offsetPersistTimer: ReturnType<typeof setTimeout> | null = null;
+
   async start(): Promise<void> {
     if (!shouldInject()) {
       log.debug('injection guard: already injected in this frame, skipping');
@@ -60,13 +71,46 @@ export class Bootstrap {
     });
     this.spaObserver.start();
 
+    const state = await this.storage.load();
+    this.lastKnownEnabled = state.enabled;
+    this.offsetsWereEmpty = Object.keys(state.widgetOffsets).length === 0;
+    this.storageUnsubscribe = this.storage.onChange((next) => this.handleStorageChange(next));
+
+    if (!state.enabled) {
+      log.info('TradePilot is disabled (popup toggle) — not mounting');
+      return;
+    }
     await this.runOnce();
+  }
+
+  /** Popup toggling "enabled" or "reset position" while this tab is already open — no reload needed. */
+  private handleStorageChange(next: StorageSchema): void {
+    if (next.enabled !== this.lastKnownEnabled) {
+      this.lastKnownEnabled = next.enabled;
+      if (next.enabled) {
+        void this.runOnce();
+      } else {
+        this.teardownWidgetAndBridge();
+      }
+      return; // mounting fresh already applies current collapsed/offsets state
+    }
+
+    if (this.widget === null) return;
+    this.widget.setCollapsedExternal(next.widgetCollapsed);
+
+    const nowEmpty = Object.keys(next.widgetOffsets).length === 0;
+    if (nowEmpty && !this.offsetsWereEmpty) {
+      this.widget.resetOffsets();
+    }
+    this.offsetsWereEmpty = nowEmpty;
   }
 
   private async handleNavigation(): Promise<void> {
     log.info('re-bootstrapping after SPA navigation');
     this.teardownWidgetAndBridge();
-    await this.runOnce();
+    if (this.lastKnownEnabled) {
+      await this.runOnce();
+    }
   }
 
   private async runOnce(): Promise<void> {
@@ -101,6 +145,8 @@ export class Bootstrap {
       });
     }
     const suggestionConfig = buildDemoSuggestionConfig(spot);
+    const persistedState = await this.storage.load();
+    if (this.disposed || token !== this.runToken) return;
 
     // The Trade handler needs a WidgetRoot instance (to call showToast on)
     // that doesn't exist until after construction — constructed once with
@@ -111,6 +157,12 @@ export class Bootstrap {
     const widget = new WidgetRoot({
       bridge,
       demoMode: true,
+      initialCollapsed: persistedState.widgetCollapsed,
+      initialOffsets: persistedState.widgetOffsets,
+      onCollapsedChange: (collapsed) => {
+        void this.storage.patch({ widgetCollapsed: collapsed });
+      },
+      onOffsetChange: (id, offset) => this.persistOffsetDebounced(id, offset),
       suggestion: {
         symbolLabel: suggestionConfig.strikeLabel,
         subLabel: `Entry ${suggestionConfig.entry}`,
@@ -137,6 +189,23 @@ export class Bootstrap {
     await widget.mount();
   }
 
+  /** Coalesces rapid drag-move updates into one storage write, not one per pointermove. */
+  private persistOffsetDebounced(id: string, offset: Offset): void {
+    this.pendingOffsets[id] = offset;
+    if (this.offsetPersistTimer !== null) clearTimeout(this.offsetPersistTimer);
+    this.offsetPersistTimer = setTimeout(() => {
+      const toWrite = this.pendingOffsets;
+      this.pendingOffsets = {};
+      this.offsetPersistTimer = null;
+      this.storage
+        .load()
+        .then((current) =>
+          this.storage.patch({ widgetOffsets: { ...current.widgetOffsets, ...toWrite } }),
+        )
+        .catch((error: unknown) => log.warn('failed to persist widget offsets', { error: String(error) }));
+    }, OFFSET_PERSIST_DEBOUNCE_MS);
+  }
+
   private teardownWidgetAndBridge(): void {
     this.widget?.destroy();
     this.widget = null;
@@ -147,6 +216,9 @@ export class Bootstrap {
   /** Full teardown (§7.5/§R-P1) — everything released, injected flag cleared. */
   destroy(): void {
     this.disposed = true;
+    if (this.offsetPersistTimer !== null) clearTimeout(this.offsetPersistTimer);
+    this.storageUnsubscribe?.();
+    this.storageUnsubscribe = null;
     this.spaObserver?.stop();
     this.spaObserver = null;
     this.teardownWidgetAndBridge();
