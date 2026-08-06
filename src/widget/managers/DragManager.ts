@@ -25,7 +25,7 @@ export class DragManager {
   private readonly offsets = new Map<string, Offset>();
   private readonly dragStartOffsets = new Map<string, Offset>();
   private readonly handles: Destroyable[] = [];
-  private onChangeCb: ((elementId: string, offset: Offset) => void) | null = null;
+  private readonly changeListeners = new Set<(elementId: string, offset: Offset) => void>();
 
   getOffset(elementId: string): Offset {
     return this.offsets.get(elementId) ?? ZERO_OFFSET;
@@ -33,11 +33,17 @@ export class DragManager {
 
   setOffset(elementId: string, offset: Offset): void {
     this.offsets.set(elementId, offset);
-    this.onChangeCb?.(elementId, offset);
+    for (const cb of this.changeListeners) cb(elementId, offset);
   }
 
-  onChange(cb: (elementId: string, offset: Offset) => void): void {
-    this.onChangeCb = cb;
+  /**
+   * Multiple independent listeners (e.g. persistence AND manual-mode
+   * live re-layout, §P2) can subscribe at once — this isn't a single-slot
+   * callback.
+   */
+  onChange(cb: (elementId: string, offset: Offset) => void): () => void {
+    this.changeListeners.add(cb);
+    return () => this.changeListeners.delete(cb);
   }
 
   /** Wires a drag handle element to update `elementId`'s offset live during drag. */
@@ -88,5 +94,6 @@ export class DragManager {
     this.handles.length = 0;
     this.offsets.clear();
     this.dragStartOffsets.clear();
+    this.changeListeners.clear();
   }
 }

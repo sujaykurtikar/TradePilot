@@ -35,6 +35,9 @@ export interface WidgetSuggestionData {
   readonly onTrade: () => void;
 }
 
+/** §R-P2's degradation ladder: 'anchored' = full price tracking, 'manual' = fixed draggable panel + badge (coordinate math is untrusted, but values are still shown/tradeable). */
+export type WidgetMode = 'anchored' | 'manual';
+
 export interface WidgetRootOptions {
   readonly bridge: ChartBridge;
   readonly suggestion: WidgetSuggestionData;
@@ -45,11 +48,21 @@ export interface WidgetRootOptions {
   readonly initialOffsets?: Readonly<Record<string, Offset>>;
   readonly onOffsetChange?: (elementId: string, offset: Offset) => void;
   readonly onCollapsedChange?: (collapsed: boolean) => void;
+  /** §P2/CapabilityProbe's initial classification — defaults to 'anchored' (Day-1 has no probe wired in yet). */
+  readonly initialMode?: WidgetMode;
+  readonly initialManualReason?: string;
 }
 
 const TARGET_TP = 'level-pill-tp';
 const TARGET_SL = 'level-pill-sl';
 const TARGET_SUGGESTION = 'suggestion-card';
+
+/** Manual-mode fixed layout — top-right stack, independent of any chart coordinate math (§R-P2). */
+const MANUAL_LAYOUT_OFFSETS: Readonly<Record<string, { top: number; rightMargin: number }>> = {
+  [TARGET_TP]: { top: 56, rightMargin: 220 },
+  [TARGET_SUGGESTION]: { top: 100, rightMargin: 220 },
+  [TARGET_SL]: { top: 190, rightMargin: 220 },
+};
 
 export class WidgetRoot {
   private readonly host: ShadowHost;
@@ -65,6 +78,12 @@ export class WidgetRoot {
   private unsubscribeState: (() => void) | null = null;
 
   private readonly onCollapsedChange: ((collapsed: boolean) => void) | null;
+  private mode: WidgetMode;
+  private readonly initialManualReason: string;
+  private readonly manualBadge: HTMLDivElement;
+  private readonly manualBadgeReasonEl: HTMLSpanElement;
+  private manualResizeListener: (() => void) | null = null;
+  private unsubscribeDragForManual: (() => void) | null = null;
 
   constructor(opts: WidgetRootOptions) {
     this.suggestion = opts.suggestion;
@@ -72,6 +91,17 @@ export class WidgetRoot {
     this.anchorManager = new AnchorManager(opts.bridge, this.dragManager);
     this.stateManager = new StateManager({ collapsed: opts.initialCollapsed ?? false });
     this.onCollapsedChange = opts.onCollapsedChange ?? null;
+    this.mode = opts.initialMode ?? 'anchored';
+    this.initialManualReason = opts.initialManualReason ?? '';
+
+    this.manualBadge = document.createElement('div');
+    this.manualBadge.className = 'tp-badge-manual';
+    this.manualBadge.style.display = 'none';
+    const manualBadgeLabel = document.createElement('span');
+    manualBadgeLabel.textContent = '⚠ chart link unavailable';
+    this.manualBadgeReasonEl = document.createElement('span');
+    this.manualBadgeReasonEl.className = 'tp-badge-manual__reason';
+    this.manualBadge.append(manualBadgeLabel, this.manualBadgeReasonEl);
 
     if (opts.initialOffsets) {
       for (const [id, offset] of Object.entries(opts.initialOffsets)) {
@@ -114,6 +144,7 @@ export class WidgetRoot {
       this.suggestionCard.element,
       this.slPill.element,
       this.puck,
+      this.manualBadge,
     );
     if (this.demoBadge) this.host.layer.appendChild(this.demoBadge);
 
@@ -191,6 +222,57 @@ export class WidgetRoot {
     showToast(this.host.layer, message);
   }
 
+  /**
+   * §R-P2's degradation ladder, applied live. Reversible in both
+   * directions — a later probe recovering from 'manual' back to
+   * 'anchored' resumes the SAME AnchorManager targets (never re-created),
+   * and dropping from 'anchored' to 'manual' just stops that loop and
+   * switches to the fixed layout. Safe to call repeatedly with the same
+   * mode (e.g. a periodic probe re-confirming); each branch just re-applies.
+   */
+  setMode(mode: WidgetMode, reason = ''): void {
+    this.mode = mode;
+    if (mode === 'manual') {
+      this.anchorManager.stop();
+      this.manualBadge.style.display = '';
+      this.manualBadgeReasonEl.textContent = reason;
+      this.applyManualLayout();
+      if (this.manualResizeListener === null) {
+        this.manualResizeListener = () => this.applyManualLayout();
+        window.addEventListener('resize', this.manualResizeListener);
+      }
+      if (this.unsubscribeDragForManual === null) {
+        this.unsubscribeDragForManual = this.dragManager.onChange(() => this.applyManualLayout());
+      }
+    } else {
+      this.manualBadge.style.display = 'none';
+      if (this.manualResizeListener !== null) {
+        window.removeEventListener('resize', this.manualResizeListener);
+        this.manualResizeListener = null;
+      }
+      this.unsubscribeDragForManual?.();
+      this.unsubscribeDragForManual = null;
+      this.anchorManager.start();
+    }
+  }
+
+  private applyManualLayout(): void {
+    const elements: Record<string, HTMLElement> = {
+      [TARGET_TP]: this.tpPill.element,
+      [TARGET_SUGGESTION]: this.suggestionCard.element,
+      [TARGET_SL]: this.slPill.element,
+    };
+    for (const [id, layout] of Object.entries(MANUAL_LAYOUT_OFFSETS)) {
+      const el = elements[id];
+      if (el === undefined) continue;
+      const offset = this.dragManager.getOffset(id);
+      const x = window.innerWidth - layout.rightMargin + offset.dx;
+      const y = layout.top + offset.dy;
+      el.classList.remove('tp-positioned--hidden');
+      el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    }
+  }
+
   async mount(): Promise<void> {
     if (ShadowHost.alreadyMounted()) {
       log.warn('widget host already mounted — refusing to double-mount (§R-P1)');
@@ -198,12 +280,16 @@ export class WidgetRoot {
     }
     await this.host.loadStyles();
     this.host.mount();
-    this.anchorManager.start();
-    log.info('widget mounted');
+    this.setMode(this.mode, this.initialManualReason);
+    log.info('widget mounted', { mode: this.mode });
   }
 
   /** Full teardown (§7.5/§R-P1) — every listener/observer/rAF released. */
   destroy(): void {
+    if (this.manualResizeListener !== null) {
+      window.removeEventListener('resize', this.manualResizeListener);
+    }
+    this.unsubscribeDragForManual?.();
     this.anchorManager.dispose();
     this.dragManager.destroy();
     this.tpPill.destroy();

@@ -11,6 +11,7 @@
 
 import { createBridgeClient, type BridgeClient } from '../bridge/BridgeClient';
 import { resolveHostConfigForLocation } from '../bridge/adapters/hostConfigs';
+import { CapabilityProbe, type DegradationState } from '../bridge/CapabilityProbe';
 import { WidgetRoot } from '../widget/WidgetRoot';
 import type { Offset } from '../widget/managers/DragManager';
 import {
@@ -62,6 +63,7 @@ export class Bootstrap {
   private offsetsWereEmpty = true;
   private pendingOffsets: Record<string, Offset> = {};
   private offsetPersistTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopPeriodicProbe: (() => void) | null = null;
 
   async start(): Promise<void> {
     if (!shouldInject()) {
@@ -144,6 +146,24 @@ export class Bootstrap {
       return;
     }
 
+    // §5.4: the capability probe runs before anything depends on the
+    // bridge, i.e. right here — before the widget mounts, not after.
+    const probe = new CapabilityProbe(bridge);
+    const initialState = await probe.runOnce();
+    if (this.disposed || token !== this.runToken) return;
+    if (initialState.mode === 'unavailable') {
+      log.error('capability probe failed — widget will not mount (host page left untouched)', {
+        hostId: hostConfig.id,
+        reason: initialState.reason,
+      });
+      return;
+    }
+    if (initialState.mode === 'manual') {
+      log.warn('capability probe degraded — mounting in manual mode', {
+        reason: initialState.reason,
+      });
+    }
+
     const spot = (await waitForFirstBar(bridge, LAST_BAR_GRACE_MS)) ?? DEMO_FALLBACK_SPOT;
     if (this.disposed || token !== this.runToken) return;
     if (spot === DEMO_FALLBACK_SPOT) {
@@ -164,6 +184,8 @@ export class Bootstrap {
     const widget = new WidgetRoot({
       bridge,
       demoMode: true,
+      initialMode: initialState.mode,
+      initialManualReason: initialState.reason,
       initialCollapsed: persistedState.widgetCollapsed,
       initialOffsets: persistedState.widgetOffsets,
       onCollapsedChange: (collapsed) => {
@@ -194,6 +216,22 @@ export class Bootstrap {
     });
 
     await widget.mount();
+
+    // §8.1: re-probe periodically so a vendor deploy mid-session is
+    // caught within the interval, not from a bad fill.
+    this.stopPeriodicProbe = probe.startPeriodic((state) => this.handleProbeUpdate(state, token));
+  }
+
+  private handleProbeUpdate(state: DegradationState, token: number): void {
+    if (this.disposed || token !== this.runToken || this.widget === null) return;
+    if (state.mode === 'unavailable') {
+      log.error('capability probe lost the chart bridge mid-session — tearing the widget down', {
+        reason: state.reason,
+      });
+      this.teardownWidgetAndBridge();
+      return;
+    }
+    this.widget.setMode(state.mode, state.reason);
   }
 
   /** Coalesces rapid drag-move updates into one storage write, not one per pointermove. */
@@ -216,6 +254,8 @@ export class Bootstrap {
   }
 
   private teardownWidgetAndBridge(): void {
+    this.stopPeriodicProbe?.();
+    this.stopPeriodicProbe = null;
     this.widget?.destroy();
     this.widget = null;
     this.bridge?.dispose();

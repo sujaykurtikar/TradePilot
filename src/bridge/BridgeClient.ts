@@ -107,11 +107,14 @@ export class BridgeClient implements ChartBridge {
     return entry.value as T;
   }
 
-  /** Fires an async RPC call and updates the cache on success. Never throws. */
-  private refresh(method: BridgeMethodName, args: readonly unknown[]): void {
-    if (this.disposed) return;
-    const key = this.cacheKey(method, args);
+  /** A genuine awaited RPC round trip — rejects on timeout or dispose. Used where a caller needs a settled result, not a cached-and-possibly-stale one (e.g. CapabilityProbe's startup probe, §P2). */
+  private request<T>(method: BridgeMethodName, args: readonly unknown[]): Promise<T> {
+    if (this.disposed) return Promise.reject(new Error('bridge client disposed'));
     const id = nextRequestId();
+
+    const promise = new Promise<T>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+    });
 
     const timeout = setTimeout(() => {
       const waiter = this.pending.get(id);
@@ -120,19 +123,7 @@ export class BridgeClient implements ChartBridge {
         waiter.reject(new Error('bridge request timed out'));
       }
     }, REQUEST_TIMEOUT_MS);
-
-    const promise = new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-    });
-
-    promise
-      .then((value) => {
-        this.cache.set(key, { value, atMs: Date.now() });
-      })
-      .catch((error: unknown) => {
-        log.debug('bridge refresh failed', { method, error: String(error) });
-      })
-      .finally(() => clearTimeout(timeout));
+    promise.finally(() => clearTimeout(timeout)).catch(() => {});
 
     postProtocolMessage({
       __ns: PROTOCOL_NAMESPACE,
@@ -142,12 +133,32 @@ export class BridgeClient implements ChartBridge {
       method,
       args,
     });
+
+    return promise;
+  }
+
+  /** Fires an async RPC call and updates the cache on success. Never throws. */
+  private refresh(method: BridgeMethodName, args: readonly unknown[]): void {
+    if (this.disposed) return;
+    const key = this.cacheKey(method, args);
+    this.request<unknown>(method, args)
+      .then((value) => {
+        this.cache.set(key, { value, atMs: Date.now() });
+      })
+      .catch((error: unknown) => {
+        log.debug('bridge refresh failed', { method, error: String(error) });
+      });
   }
 
   private syncCall<T>(method: BridgeMethodName, args: readonly unknown[]): T | null {
     const key = this.cacheKey(method, args);
     this.refresh(method, args);
     return this.readCache<T>(key);
+  }
+
+  /** Awaited probe — see `request`'s doc comment. Rejects on timeout/dispose; callers should catch. */
+  probeAsync(): Promise<ProbeResult> {
+    return this.request<ProbeResult>('probe', []);
   }
 
   isAvailable(): boolean {

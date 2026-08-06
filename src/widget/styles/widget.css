@@ -285,6 +285,32 @@
   z-index: 2147483001;
 }
 
+/* §R-P2 manual-mode badge: "chart link unavailable" — coordinate math
+   failed but values are still shown and still tradeable. Amber, distinct
+   from the DEMO badge's corner and the R-OCO banner's red. */
+.tp-badge-manual {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--tp-color-demo-bg);
+  color: var(--tp-color-demo-text);
+  font-size: var(--tp-font-size-sm);
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: var(--tp-radius-sm);
+  pointer-events: none;
+  z-index: 2147483001;
+  max-width: 260px;
+}
+.tp-badge-manual__reason {
+  font-weight: 400;
+  opacity: 0.85;
+  font-size: 10px;
+}
+
 /* R-OCO: unmissable, not a subtle tint. Reserved for wiring in P6/P6t. */
 .tp-banner-unprotected {
   position: fixed;
