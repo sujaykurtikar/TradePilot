@@ -7,47 +7,82 @@
   </head>
   <body>
     <main class="panel">
-      <header class="panel__header">
-        <span class="panel__logo">⇄ Zing Trade</span>
+      <header class="panel__header panel__header--persistent">
+        <button type="button" class="panel__broker-status" id="header-broker-status">
+          <span class="panel__broker-status-avatar" id="header-broker-avatar">·</span>
+          <span class="panel__broker-status-text" id="header-broker-text">No broker connected</span>
+        </button>
+        <div class="panel__header-actions">
+          <label class="panel__header-toggle">
+            <input type="checkbox" id="header-enabled-toggle" />
+            <span class="panel__header-toggle-track"></span>
+          </label>
+          <button type="button" class="panel__icon-button" id="header-info-button" title="API status" aria-label="API status">
+            ⓘ
+          </button>
+          <button type="button" class="panel__icon-button" id="header-settings-button" title="Settings" aria-label="Settings">
+            ⚙
+          </button>
+        </div>
       </header>
+      <p class="panel__info-tooltip" id="header-info-tooltip" hidden></p>
 
       <nav class="panel__tabs" role="tablist">
-        <button type="button" class="panel__tab panel__tab--active" id="tab-brokers" data-tab="brokers">
-          Connect broker
+        <button type="button" class="panel__tab panel__tab--active" id="tab-signals" data-tab="signals">
+          Signals
         </button>
-        <button type="button" class="panel__tab" id="tab-strategy" data-tab="strategy">Strategy</button>
+        <button type="button" class="panel__tab" id="tab-strategies" data-tab="strategies">
+          Strategies
+        </button>
+        <button type="button" class="panel__tab" id="tab-learn" data-tab="learn">
+          Learn Strategies
+        </button>
       </nav>
 
-      <section class="panel__view" id="view-brokers">
-        <h1 class="panel__title">Connect your broker</h1>
-        <p class="panel__subtitle">Zing will overlay signals directly on their chart</p>
-        <div class="panel__broker-list" id="broker-list"></div>
+      <section class="panel__view" id="view-signals">
+        <div id="signals-content"></div>
       </section>
 
-      <section class="panel__view" id="view-strategy" hidden>
-        <h1 class="panel__title">Strategy</h1>
-        <p class="panel__subtitle">Save the rules you trade by — more automation here soon.</p>
+      <section class="panel__view" id="view-strategies" hidden>
+        <h1 class="panel__title">All strategies (<span id="strategies-count">0</span>)</h1>
+        <p class="panel__subtitle">Apply a strategy to drive the on-chart widget. Zero applied = manual mode.</p>
+        <div class="panel__strategy-list" id="strategy-catalog-list"></div>
 
-        <form class="panel__strategy-form" id="strategy-form">
-          <input
-            type="text"
-            id="strategy-name"
-            class="panel__input"
-            placeholder="Strategy name"
-            required
-          />
-          <textarea
-            id="strategy-notes"
-            class="panel__textarea"
-            placeholder="Entry rules, risk per trade, notes…"
-            rows="3"
-          ></textarea>
-          <button type="submit" class="panel__button panel__button--primary">Add strategy</button>
-        </form>
+        <details class="panel__custom-strategy">
+          <summary>Add a custom strategy note</summary>
+          <form class="panel__strategy-form" id="strategy-form">
+            <input type="text" id="strategy-name" class="panel__input" placeholder="Strategy name" required />
+            <textarea
+              id="strategy-notes"
+              class="panel__textarea"
+              placeholder="Entry rules, risk per trade, notes…"
+              rows="3"
+            ></textarea>
+            <button type="submit" class="panel__button panel__button--primary">Add strategy</button>
+          </form>
+        </details>
+      </section>
 
-        <div class="panel__strategy-list" id="strategy-list"></div>
+      <section class="panel__view" id="view-learn" hidden>
+        <h1 class="panel__title">Learn Strategies</h1>
+        <p class="panel__subtitle">
+          Guides on each strategy's logic and how to read a signal card are coming soon. In the
+          meantime, hover a strategy's rationale in the Signals tab for a plain-language explanation.
+        </p>
       </section>
     </main>
+
+    <!-- Broker connect list, opened from the header's broker-status button -->
+    <div class="panel__modal" id="broker-list-modal" hidden>
+      <div class="panel__modal-card panel__modal-card--wide">
+        <h2 class="panel__modal-title">Connect a broker</h2>
+        <p class="panel__modal-hint">Zing will overlay signals directly on their chart</p>
+        <div class="panel__broker-list" id="broker-list"></div>
+        <div class="panel__modal-actions">
+          <button type="button" class="panel__button" id="broker-list-close">Close</button>
+        </div>
+      </div>
+    </div>
 
     <!-- API key entry, shown over the broker list when "Open" is clicked on a not-connected broker -->
     <div class="panel__modal" id="broker-modal" hidden>

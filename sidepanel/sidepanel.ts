@@ -1,17 +1,28 @@
 /**
- * Side panel: broker API-key connections + saved strategies. Both are
- * local-only (chrome.storage.local via SidePanelStorageManager) — this
- * extension never transmits either anywhere; "connected" just means a
- * key/secret pair is on file for the widget to read later once real
- * broker order submission (OrderService) is wired to use it.
+ * Side panel (Phase 3 / IMPLEMENTATION_PLAN_STRATEGIES_SIGNALS.md P9-P10):
+ * persistent header (broker status + enable toggle + API status, folded in
+ * from the old two-tab layout / popup) plus Signals / Strategies /
+ * Learn Strategies tabs. Trading mode (manual vs strategy) is derived
+ * elsewhere (Bootstrap.ts, P13) from `appliedStrategyIds.length` — this
+ * file only reads/writes that state, it doesn't interpret it.
+ *
+ * Content here is intentionally simple (P11/P12 add filters, favorites,
+ * alerts, the filter drawer) — P10's job was the structural shell; this
+ * goes slightly beyond "just a placeholder" so the tabs are actually usable
+ * while P11/P12 polish lands.
  */
 
 import { SidePanelStorageManager } from '../src/core/storage/SidePanelStorageManager';
-import type { BrokerConnection, Strategy } from '../src/core/storage/sidePanelSchema';
+import { StorageManager } from '../src/core/storage/StorageManager';
+import { fetchStrategyCatalog } from '../src/core/strategies/strategyCatalog';
+import { sendToBackground } from '../src/core/messaging/MessageBus';
+import type { StatusResponse } from '../src/core/messaging/messages';
+import type { BrokerConnection, StrategyV2 } from '../src/core/storage/sidePanelSchema';
 import { getLogger } from '../src/utils/logger';
 
 const log = getLogger('sidepanel');
-const storage = new SidePanelStorageManager();
+const sidePanelStorage = new SidePanelStorageManager();
+const widgetStorage = new StorageManager();
 
 interface BrokerDef {
   readonly id: string;
@@ -42,8 +53,37 @@ function initials(name: string): string {
 }
 
 let openBrokerId: string | null = null;
+let catalogCache: readonly StrategyV2[] | null = null;
 
-function renderBrokers(brokers: Readonly<Record<string, BrokerConnection>>): void {
+function getCatalog(): readonly StrategyV2[] {
+  // Mock catalog is deterministic per load (see strategyCatalog.ts) — cache
+  // once per session so re-renders don't reshuffle todaysReturns, etc.
+  if (catalogCache === null) catalogCache = fetchStrategyCatalog();
+  return catalogCache;
+}
+
+// ---------- Header: broker status, enable toggle, API status ----------
+
+function renderHeaderBrokerStatus(brokers: Readonly<Record<string, BrokerConnection>>): void {
+  const connected = Object.values(brokers)[0] ?? null;
+  byId<HTMLSpanElement>('header-broker-avatar').textContent = connected
+    ? initials(connected.name)
+    : '·';
+  byId<HTMLSpanElement>('header-broker-text').textContent = connected
+    ? `${connected.name} Connected`
+    : 'No broker connected';
+}
+
+function applyApiStatusTooltip(status: StatusResponse['apiStatus']): void {
+  const tooltip = byId<HTMLParagraphElement>('header-info-tooltip');
+  const label =
+    status === 'reachable' ? 'API reachable' : status === 'unreachable' ? 'API unreachable' : 'API status not checked';
+  tooltip.textContent = label;
+}
+
+// ---------- Broker connect modal (opened from the header) ----------
+
+function renderBrokerList(brokers: Readonly<Record<string, BrokerConnection>>): void {
   const list = byId<HTMLDivElement>('broker-list');
   list.textContent = '';
 
@@ -76,10 +116,10 @@ function renderBrokers(brokers: Readonly<Record<string, BrokerConnection>>): voi
     }
 
     const statusEl = document.createElement('span');
-    statusEl.className = 'panel__broker-status';
+    statusEl.className = 'panel__broker-status-label';
     if (connection) {
       statusEl.textContent = 'Logged in';
-      statusEl.classList.add('panel__broker-status--connected');
+      statusEl.classList.add('panel__broker-status-label--connected');
     } else {
       statusEl.textContent = 'Not logged in';
     }
@@ -118,69 +158,268 @@ function closeBrokerModal(): void {
 }
 
 async function disconnectBroker(brokerId: string): Promise<void> {
-  const current = await storage.load();
+  const current = await sidePanelStorage.load();
   const next = { ...current.brokers };
   delete next[brokerId];
-  const state = await storage.patch({ brokers: next });
-  renderBrokers(state.brokers);
+  const state = await sidePanelStorage.patch({ brokers: next });
+  renderBrokerList(state.brokers);
+  renderHeaderBrokerStatus(state.brokers);
 }
 
-function renderStrategies(strategies: readonly Strategy[]): void {
-  const list = byId<HTMLDivElement>('strategy-list');
-  list.textContent = '';
+// ---------- Strategies tab ----------
 
-  if (strategies.length === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'panel__empty';
-    empty.textContent = 'No strategies saved yet.';
-    list.appendChild(empty);
-    return;
+function renderDailyDots(days: readonly ('win' | 'loss')[]): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'panel__daily-dots';
+  const labels = ['M', 'T', 'W', 'T', 'F'];
+  for (let i = 0; i < 5; i++) {
+    const dot = document.createElement('span');
+    const result = days[i];
+    dot.className =
+      'panel__daily-dot' +
+      (result === 'win' ? ' panel__daily-dot--win' : result === 'loss' ? ' panel__daily-dot--loss' : '');
+    dot.title = labels[i] ?? '';
+    dot.textContent = labels[i] ?? '';
+    wrap.appendChild(dot);
+  }
+  return wrap;
+}
+
+function renderStrategyCard(strategy: StrategyV2, applied: boolean): HTMLElement {
+  const card = document.createElement('div');
+  card.className = 'panel__strategy-card' + (applied ? ' panel__strategy-card--applied' : '');
+
+  const top = document.createElement('div');
+  top.className = 'panel__strategy-card-top';
+
+  const identity = document.createElement('div');
+  identity.className = 'panel__strategy-identity';
+  const avatar = document.createElement('span');
+  avatar.className = 'panel__strategy-avatar';
+  avatar.textContent = '⇄';
+  const meta = document.createElement('div');
+  const name = document.createElement('div');
+  name.className = 'panel__strategy-name';
+  name.textContent = strategy.name;
+  const sub = document.createElement('div');
+  sub.className = 'panel__strategy-sub';
+  sub.textContent = `${strategy.instrument} · Win rate ${strategy.winRatePct}%`;
+  meta.append(name, sub);
+  identity.append(avatar, meta);
+
+  const actionButton = document.createElement('button');
+  actionButton.type = 'button';
+  actionButton.className = applied ? 'panel__button panel__button--outline' : 'panel__button panel__button--primary';
+  actionButton.textContent = applied ? 'Remove' : 'Apply';
+  actionButton.addEventListener('click', () => void toggleApplied(strategy.id, !applied));
+
+  top.append(identity, actionButton);
+
+  const bottom = document.createElement('div');
+  bottom.className = 'panel__strategy-card-bottom';
+
+  const lastWeek = document.createElement('div');
+  const lastWeekLabel = document.createElement('div');
+  lastWeekLabel.className = 'panel__strategy-stat-label';
+  lastWeekLabel.textContent = 'Last week';
+  lastWeek.appendChild(lastWeekLabel);
+  lastWeek.appendChild(renderDailyDots(strategy.lastWeekDaily));
+
+  const todayReturns = document.createElement('div');
+  const todayLabel = document.createElement('div');
+  todayLabel.className = 'panel__strategy-stat-label';
+  todayLabel.textContent = "Today's Returns";
+  const todayValue = document.createElement('div');
+  todayValue.className =
+    'panel__strategy-returns' + (strategy.todayReturnsPct < 0 ? ' panel__strategy-returns--negative' : '');
+  todayValue.textContent = `${strategy.todayReturnsPct > 0 ? '+' : ''}${strategy.todayReturnsPct.toFixed(2)}%`;
+  todayReturns.append(todayLabel, todayValue);
+
+  bottom.append(lastWeek, todayReturns);
+  card.append(top, bottom);
+  return card;
+}
+
+async function toggleApplied(strategyId: string, apply: boolean): Promise<void> {
+  const current = await sidePanelStorage.load();
+  const applied = new Set(current.appliedStrategyIds);
+  if (apply) {
+    applied.add(strategyId);
+  } else {
+    applied.delete(strategyId);
+  }
+  const appliedStrategyIds = [...applied];
+  // If the removed strategy was active, clear active; if nothing is active
+  // yet and something just got applied, make it active by default.
+  let activeStrategyId = current.activeStrategyId;
+  if (!apply && activeStrategyId === strategyId) activeStrategyId = appliedStrategyIds[0] ?? null;
+  if (apply && activeStrategyId === null) activeStrategyId = strategyId;
+
+  const state = await sidePanelStorage.patch({ appliedStrategyIds, activeStrategyId });
+  renderStrategiesTab(state);
+  renderSignalsTab(state);
+}
+
+async function setActiveStrategy(strategyId: string): Promise<void> {
+  const state = await sidePanelStorage.patch({ activeStrategyId: strategyId });
+  renderSignalsTab(state);
+}
+
+function renderStrategiesTab(state: { appliedStrategyIds: readonly string[]; strategies: readonly StrategyV2[] }): void {
+  const catalog = getCatalog();
+  const applied = new Set(state.appliedStrategyIds);
+  byId<HTMLSpanElement>('strategies-count').textContent = String(catalog.length);
+
+  const list = byId<HTMLDivElement>('strategy-catalog-list');
+  list.textContent = '';
+  for (const strategy of catalog) {
+    list.appendChild(renderStrategyCard(strategy, applied.has(strategy.id)));
   }
 
+  renderCustomStrategyList(state.strategies);
+}
+
+function renderCustomStrategyList(strategies: readonly StrategyV2[]): void {
+  // Custom (user-added) strategies are kept separate from the mock catalog
+  // above — this preserves the pre-P9 "Add strategy" note-taking feature
+  // rather than dropping it.
+  const existing = document.getElementById('custom-strategy-list');
+  existing?.remove();
+  if (strategies.length === 0) return;
+
+  const form = byId<HTMLFormElement>('strategy-form');
+  const list = document.createElement('div');
+  list.id = 'custom-strategy-list';
+  list.className = 'panel__strategy-list';
   for (const strategy of [...strategies].sort((a, b) => b.createdAt - a.createdAt)) {
     const card = document.createElement('div');
     card.className = 'panel__strategy-card';
-
     const name = document.createElement('h3');
     name.className = 'panel__strategy-name';
     name.textContent = strategy.name;
-
     const notes = document.createElement('p');
     notes.className = 'panel__strategy-notes';
     notes.textContent = strategy.notes;
-
     const removeButton = document.createElement('button');
     removeButton.type = 'button';
     removeButton.className = 'panel__button panel__button--danger';
     removeButton.textContent = 'Remove';
-    removeButton.addEventListener('click', () => void removeStrategy(strategy.id));
-
+    removeButton.addEventListener('click', () => void removeCustomStrategy(strategy.id));
     card.append(name, notes, removeButton);
     list.appendChild(card);
   }
+  form.insertAdjacentElement('afterend', list);
 }
 
-async function removeStrategy(strategyId: string): Promise<void> {
-  const current = await storage.load();
-  const next = current.strategies.filter((s) => s.id !== strategyId);
-  const state = await storage.patch({ strategies: next });
-  renderStrategies(state.strategies);
+async function removeCustomStrategy(strategyId: string): Promise<void> {
+  const current = await sidePanelStorage.load();
+  const strategies = current.strategies.filter((s) => s.id !== strategyId);
+  const state = await sidePanelStorage.patch({ strategies });
+  renderStrategiesTab(state);
 }
 
-function switchTab(tab: 'brokers' | 'strategy'): void {
-  byId<HTMLButtonElement>('tab-brokers').classList.toggle('panel__tab--active', tab === 'brokers');
-  byId<HTMLButtonElement>('tab-strategy').classList.toggle('panel__tab--active', tab === 'strategy');
-  byId<HTMLElement>('view-brokers').hidden = tab !== 'brokers';
-  byId<HTMLElement>('view-strategy').hidden = tab !== 'strategy';
+// ---------- Signals tab ----------
+
+function renderSignalsTab(state: {
+  appliedStrategyIds: readonly string[];
+  activeStrategyId: string | null;
+}): void {
+  const container = byId<HTMLDivElement>('signals-content');
+  container.textContent = '';
+
+  if (state.appliedStrategyIds.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'panel__empty-state';
+    const icon = document.createElement('div');
+    icon.className = 'panel__empty-icon';
+    icon.textContent = '💡';
+    const text = document.createElement('p');
+    text.textContent = 'No signals yet — apply a strategy to see live signals here, or trade manually on the chart.';
+    empty.append(icon, text);
+    container.appendChild(empty);
+    return;
+  }
+
+  const catalog = getCatalog();
+  const byIdMap = new Map(catalog.map((s) => [s.id, s]));
+
+  for (const strategyId of state.appliedStrategyIds) {
+    const strategy = byIdMap.get(strategyId);
+    if (strategy === undefined) continue;
+
+    const card = document.createElement('div');
+    card.className = 'panel__strategy-card';
+    if (strategyId === state.activeStrategyId) card.classList.add('panel__strategy-card--applied');
+
+    const top = document.createElement('div');
+    top.className = 'panel__strategy-card-top';
+    const name = document.createElement('div');
+    name.className = 'panel__strategy-name';
+    name.textContent = strategy.name;
+
+    const activeControl = document.createElement('label');
+    activeControl.className = 'panel__active-radio';
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'active-strategy';
+    radio.checked = strategyId === state.activeStrategyId;
+    radio.addEventListener('change', () => void setActiveStrategy(strategyId));
+    activeControl.append(radio, document.createTextNode(' Active on chart'));
+
+    top.append(name, activeControl);
+
+    const sub = document.createElement('p');
+    sub.className = 'panel__strategy-sub';
+    sub.textContent = `${strategy.instrument} · Win rate ${strategy.winRatePct}% · Today ${strategy.todayReturnsPct > 0 ? '+' : ''}${strategy.todayReturnsPct.toFixed(2)}%`;
+
+    card.append(top, sub);
+    container.appendChild(card);
+  }
 }
+
+// ---------- Tabs ----------
+
+function switchTab(tab: 'signals' | 'strategies' | 'learn'): void {
+  byId<HTMLButtonElement>('tab-signals').classList.toggle('panel__tab--active', tab === 'signals');
+  byId<HTMLButtonElement>('tab-strategies').classList.toggle('panel__tab--active', tab === 'strategies');
+  byId<HTMLButtonElement>('tab-learn').classList.toggle('panel__tab--active', tab === 'learn');
+  byId<HTMLElement>('view-signals').hidden = tab !== 'signals';
+  byId<HTMLElement>('view-strategies').hidden = tab !== 'strategies';
+  byId<HTMLElement>('view-learn').hidden = tab !== 'learn';
+}
+
+// ---------- Init ----------
 
 async function init(): Promise<void> {
-  const state = await storage.load();
-  renderBrokers(state.brokers);
-  renderStrategies(state.strategies);
+  const sidePanelState = await sidePanelStorage.load();
+  renderHeaderBrokerStatus(sidePanelState.brokers);
+  renderBrokerList(sidePanelState.brokers);
+  renderStrategiesTab(sidePanelState);
+  renderSignalsTab(sidePanelState);
 
-  byId<HTMLButtonElement>('tab-brokers').addEventListener('click', () => switchTab('brokers'));
-  byId<HTMLButtonElement>('tab-strategy').addEventListener('click', () => switchTab('strategy'));
+  const widgetState = await widgetStorage.load();
+  byId<HTMLInputElement>('header-enabled-toggle').checked = widgetState.enabled;
+
+  byId<HTMLButtonElement>('tab-signals').addEventListener('click', () => switchTab('signals'));
+  byId<HTMLButtonElement>('tab-strategies').addEventListener('click', () => switchTab('strategies'));
+  byId<HTMLButtonElement>('tab-learn').addEventListener('click', () => switchTab('learn'));
+
+  byId<HTMLButtonElement>('header-broker-status').addEventListener('click', () => {
+    byId<HTMLDivElement>('broker-list-modal').hidden = false;
+  });
+  byId<HTMLButtonElement>('broker-list-close').addEventListener('click', () => {
+    byId<HTMLDivElement>('broker-list-modal').hidden = true;
+  });
+
+  byId<HTMLInputElement>('header-enabled-toggle').addEventListener('change', (event) => {
+    void widgetStorage.patch({ enabled: (event.target as HTMLInputElement).checked });
+  });
+
+  const infoButton = byId<HTMLButtonElement>('header-info-button');
+  const infoTooltip = byId<HTMLParagraphElement>('header-info-tooltip');
+  infoButton.addEventListener('click', () => {
+    infoTooltip.hidden = !infoTooltip.hidden;
+  });
 
   byId<HTMLButtonElement>('broker-cancel').addEventListener('click', closeBrokerModal);
 
@@ -193,7 +432,7 @@ async function init(): Promise<void> {
     if (apiKey === '' || apiSecret === '') return;
 
     void (async () => {
-      const current = await storage.load();
+      const current = await sidePanelStorage.load();
       const connection: BrokerConnection = {
         id: brokerId,
         name: BROKERS.find((b) => b.id === brokerId)?.name ?? brokerId,
@@ -201,10 +440,11 @@ async function init(): Promise<void> {
         apiSecret,
         connectedAt: Date.now(),
       };
-      const result = await storage.patch({
+      const result = await sidePanelStorage.patch({
         brokers: { ...current.brokers, [brokerId]: connection },
       });
-      renderBrokers(result.brokers);
+      renderBrokerList(result.brokers);
+      renderHeaderBrokerStatus(result.brokers);
       closeBrokerModal();
     })();
   });
@@ -217,24 +457,39 @@ async function init(): Promise<void> {
     if (name === '') return;
 
     void (async () => {
-      const current = await storage.load();
-      const strategy: Strategy = {
+      const current = await sidePanelStorage.load();
+      const strategy: StrategyV2 = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         name,
         notes: notesInput.value.trim(),
         createdAt: Date.now(),
+        instrument: 'NIFTY',
+        winRatePct: 0,
+        lastWeekDaily: [],
+        todayReturnsPct: 0,
+        favorite: false,
+        alertsEnabled: false,
       };
-      const result = await storage.patch({ strategies: [...current.strategies, strategy] });
-      renderStrategies(result.strategies);
+      const result = await sidePanelStorage.patch({ strategies: [...current.strategies, strategy] });
+      renderStrategiesTab(result);
       nameInput.value = '';
       notesInput.value = '';
     })();
   });
 
-  storage.onChange((next) => {
-    renderBrokers(next.brokers);
-    renderStrategies(next.strategies);
+  sidePanelStorage.onChange((next) => {
+    renderHeaderBrokerStatus(next.brokers);
+    renderBrokerList(next.brokers);
+    renderStrategiesTab(next);
+    renderSignalsTab(next);
   });
+
+  widgetStorage.onChange((next) => {
+    byId<HTMLInputElement>('header-enabled-toggle').checked = next.enabled;
+  });
+
+  const status = await sendToBackground<StatusResponse>({ type: 'tradepilot/get-status' });
+  applyApiStatusTooltip(status?.apiStatus ?? 'not-checked');
 }
 
 init().catch((error: unknown) => {

@@ -4,6 +4,11 @@
  * StorageSchema (schema.ts) — that schema is the widget's versioned
  * settings blob; this is unrelated data with its own shape, and giving it
  * a separate key avoids coupling a migration bump here to one there.
+ *
+ * v2 (Phase 3 / IMPLEMENTATION_PLAN_STRATEGIES_SIGNALS.md §5.1): adds the
+ * richer strategy model (win rate, last-week daily results, today's
+ * returns, favorite/alerts) plus applied/active strategy tracking, which
+ * on-chart trading mode is derived from (0 applied = manual, >=1 = strategy).
  */
 
 export interface BrokerConnection {
@@ -22,29 +27,90 @@ export interface Strategy {
   readonly createdAt: number;
 }
 
+export interface StrategyV2 {
+  readonly id: string;
+  readonly name: string;
+  readonly notes: string;
+  readonly createdAt: number;
+  readonly instrument: string;
+  readonly winRatePct: number;
+  readonly lastWeekDaily: readonly ('win' | 'loss')[];
+  readonly todayReturnsPct: number;
+  readonly favorite: boolean;
+  readonly alertsEnabled: boolean;
+}
+
 export interface SidePanelSchema {
   readonly version: 1;
   readonly brokers: Readonly<Record<string, BrokerConnection>>;
   readonly strategies: readonly Strategy[];
 }
 
-export const DEFAULT_SIDEPANEL_STORAGE: SidePanelSchema = {
-  version: 1,
+export interface SidePanelSchemaV2 {
+  readonly version: 2;
+  readonly brokers: Readonly<Record<string, BrokerConnection>>;
+  readonly strategies: readonly StrategyV2[];
+  readonly appliedStrategyIds: readonly string[];
+  readonly activeStrategyId: string | null;
+  readonly strategiesLoggedIn: boolean;
+}
+
+export const DEFAULT_SIDEPANEL_STORAGE: SidePanelSchemaV2 = {
+  version: 2,
   brokers: {},
   strategies: [],
+  appliedStrategyIds: [],
+  activeStrategyId: null,
+  strategiesLoggedIn: false,
 };
 
 export const SIDEPANEL_STORAGE_KEY = 'tradepilot_sidepanel';
 
-export function migrateSidePanelStorage(raw: unknown): SidePanelSchema {
+function upgradeStrategyV1ToV2(strategy: Strategy): StrategyV2 {
+  return {
+    ...strategy,
+    instrument: 'NIFTY',
+    winRatePct: 0,
+    lastWeekDaily: [],
+    todayReturnsPct: 0,
+    favorite: false,
+    alertsEnabled: false,
+  };
+}
+
+export function migrateSidePanelStorage(raw: unknown): SidePanelSchemaV2 {
   if (raw === undefined || raw === null || typeof raw !== 'object') {
     return DEFAULT_SIDEPANEL_STORAGE;
   }
-  const candidate = raw as Partial<SidePanelSchema>;
-  if (candidate.version !== 1) return DEFAULT_SIDEPANEL_STORAGE;
-  return {
-    version: 1,
-    brokers: candidate.brokers ?? {},
-    strategies: candidate.strategies ?? [],
-  };
+
+  const candidate = raw as Partial<SidePanelSchema> | Partial<SidePanelSchemaV2>;
+
+  if (candidate.version === 2) {
+    const v2 = candidate as Partial<SidePanelSchemaV2>;
+    return {
+      version: 2,
+      brokers: v2.brokers ?? {},
+      strategies: v2.strategies ?? [],
+      appliedStrategyIds: v2.appliedStrategyIds ?? [],
+      activeStrategyId: v2.activeStrategyId ?? null,
+      strategiesLoggedIn: v2.strategiesLoggedIn ?? false,
+    };
+  }
+
+  if (candidate.version === 1) {
+    const v1 = candidate as Partial<SidePanelSchema>;
+    return {
+      version: 2,
+      brokers: v1.brokers ?? {},
+      strategies: (v1.strategies ?? []).map(upgradeStrategyV1ToV2),
+      // Preserves today's real behavior on upgrade: zero applied strategies
+      // means every existing install lands in manual mode until the user
+      // explicitly applies one (plan §5.1 migration note).
+      appliedStrategyIds: [],
+      activeStrategyId: null,
+      strategiesLoggedIn: false,
+    };
+  }
+
+  return DEFAULT_SIDEPANEL_STORAGE;
 }

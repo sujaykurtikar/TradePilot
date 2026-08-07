@@ -5,13 +5,13 @@ import {
   DEFAULT_SIDEPANEL_STORAGE,
   migrateSidePanelStorage,
   SIDEPANEL_STORAGE_KEY,
-  type SidePanelSchema,
+  type SidePanelSchemaV2,
 } from './sidePanelSchema';
 
 const log = getLogger('storage:sidepanel');
 
 export class SidePanelStorageManager {
-  async load(): Promise<SidePanelSchema> {
+  async load(): Promise<SidePanelSchemaV2> {
     try {
       const result = await chrome.storage.local.get(SIDEPANEL_STORAGE_KEY);
       return migrateSidePanelStorage(result[SIDEPANEL_STORAGE_KEY]);
@@ -21,7 +21,7 @@ export class SidePanelStorageManager {
     }
   }
 
-  async save(state: SidePanelSchema): Promise<void> {
+  async save(state: SidePanelSchemaV2): Promise<void> {
     try {
       await chrome.storage.local.set({ [SIDEPANEL_STORAGE_KEY]: state });
     } catch (error) {
@@ -29,14 +29,14 @@ export class SidePanelStorageManager {
     }
   }
 
-  async patch(patch: Partial<SidePanelSchema>): Promise<SidePanelSchema> {
+  async patch(patch: Partial<SidePanelSchemaV2>): Promise<SidePanelSchemaV2> {
     const current = await this.load();
-    const next = { ...current, ...patch } as SidePanelSchema;
+    const next = { ...current, ...patch } as SidePanelSchemaV2;
     await this.save(next);
     return next;
   }
 
-  onChange(cb: (next: SidePanelSchema) => void): () => void {
+  onChange(cb: (next: SidePanelSchemaV2) => void): () => void {
     const listener = (
       changes: Record<string, chrome.storage.StorageChange>,
       areaName: string,
