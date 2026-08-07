@@ -86,23 +86,21 @@ export function migrateSidePanelStorage(raw: unknown): SidePanelSchemaV2 {
   const candidate = raw as Partial<SidePanelSchema> | Partial<SidePanelSchemaV2>;
 
   if (candidate.version === 2) {
-    const v2 = candidate as Partial<SidePanelSchemaV2>;
     return {
       version: 2,
-      brokers: v2.brokers ?? {},
-      strategies: v2.strategies ?? [],
-      appliedStrategyIds: v2.appliedStrategyIds ?? [],
-      activeStrategyId: v2.activeStrategyId ?? null,
-      strategiesLoggedIn: v2.strategiesLoggedIn ?? false,
+      brokers: candidate.brokers ?? {},
+      strategies: candidate.strategies ?? [],
+      appliedStrategyIds: candidate.appliedStrategyIds ?? [],
+      activeStrategyId: candidate.activeStrategyId ?? null,
+      strategiesLoggedIn: candidate.strategiesLoggedIn ?? false,
     };
   }
 
   if (candidate.version === 1) {
-    const v1 = candidate as Partial<SidePanelSchema>;
     return {
       version: 2,
-      brokers: v1.brokers ?? {},
-      strategies: (v1.strategies ?? []).map(upgradeStrategyV1ToV2),
+      brokers: candidate.brokers ?? {},
+      strategies: (candidate.strategies ?? []).map(upgradeStrategyV1ToV2),
       // Preserves today's real behavior on upgrade: zero applied strategies
       // means every existing install lands in manual mode until the user
       // explicitly applies one (plan §5.1 migration note).
