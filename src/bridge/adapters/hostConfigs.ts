@@ -77,10 +77,22 @@ const KOTAK_ORIGIN = 'https://trade.kotakneo.com';
  * Kotak, not some other site's blob: URL, which shares the `blob:`
  * protocol but never Kotak's origin).
  */
+/**
+ * TradingView redirects users to a regional subdomain based on locale
+ * (e.g. in.tradingview.com for India, not just www.tradingview.com) —
+ * same app, same internal API global, different hostname. Matching by
+ * suffix rather than the single exact "www" hostname is required for the
+ * widget to bootstrap at all for any non-US-default user (manifest.ts's
+ * content_scripts matches this same pattern for the same reason).
+ */
+function isTradingViewHostname(hostname: string): boolean {
+  return hostname === 'tradingview.com' || hostname.endsWith('.tradingview.com');
+}
+
 export function resolveHostConfigForLocation(
   loc: Location = window.location,
 ): InternalApiHostConfig | null {
-  if (loc.hostname === 'www.tradingview.com') return TRADINGVIEW_SITE_CONFIG;
+  if (isTradingViewHostname(loc.hostname)) return TRADINGVIEW_SITE_CONFIG;
   if (loc.protocol === 'blob:' && loc.origin === KOTAK_ORIGIN) return KOTAK_NEO_CONFIG;
   return null;
 }

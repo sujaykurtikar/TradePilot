@@ -85,14 +85,21 @@ const manifest: TradePilotManifest = {
   },
   content_scripts: [
     // TradingView.com — same-document chart, no iframe nesting (§4.1).
+    // Wildcarded subdomain (not just "www") because TradingView redirects
+    // users to a regional subdomain based on locale — e.g. India-based
+    // users land on in.tradingview.com, not www.tradingview.com, for the
+    // exact same chart app. host_permissions above already wildcarded this;
+    // matches here didn't, so the content script silently never injected
+    // at all on any non-"www" regional subdomain (no error — Chrome just
+    // never runs a script outside its declared matches).
     {
-      matches: ['https://www.tradingview.com/chart/*'],
+      matches: ['https://*.tradingview.com/chart/*'],
       world: 'ISOLATED',
       js: ['content.js'],
       run_at: 'document_idle',
     },
     {
-      matches: ['https://www.tradingview.com/chart/*'],
+      matches: ['https://*.tradingview.com/chart/*'],
       world: 'MAIN',
       js: ['bridge.js'],
       run_at: 'document_idle',
@@ -131,7 +138,7 @@ const manifest: TradePilotManifest = {
     {
       resources: ['styles/*.css'],
       matches: [
-        'https://www.tradingview.com/*',
+        'https://*.tradingview.com/*',
         'https://trade.kotakneo.com/*',
         'https://*.kotaksecurities.com/*',
       ],

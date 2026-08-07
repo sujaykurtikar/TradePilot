@@ -19,6 +19,33 @@ describe('resolveHostConfigForLocation — §P7 frame identification', () => {
     expect(resolveHostConfigForLocation(loc)).toBe(TRADINGVIEW_SITE_CONFIG);
   });
 
+  it('matches a regional TradingView subdomain (e.g. in.tradingview.com — India locale redirect), not just "www"', () => {
+    const loc = fakeLocation({
+      hostname: 'in.tradingview.com',
+      protocol: 'https:',
+      origin: 'https://in.tradingview.com',
+    });
+    expect(resolveHostConfigForLocation(loc)).toBe(TRADINGVIEW_SITE_CONFIG);
+  });
+
+  it('matches the bare apex domain tradingview.com', () => {
+    const loc = fakeLocation({
+      hostname: 'tradingview.com',
+      protocol: 'https:',
+      origin: 'https://tradingview.com',
+    });
+    expect(resolveHostConfigForLocation(loc)).toBe(TRADINGVIEW_SITE_CONFIG);
+  });
+
+  it('rejects a lookalike hostname that merely ends in the string "tradingview.com" without a real subdomain boundary', () => {
+    const loc = fakeLocation({
+      hostname: 'eviltradingview.com',
+      protocol: 'https:',
+      origin: 'https://eviltradingview.com',
+    });
+    expect(resolveHostConfigForLocation(loc)).toBeNull();
+  });
+
   it("does NOT match Kotak's outer document (https://trade.kotakneo.com/TradeFromCharts/...) — it has no chart", () => {
     const loc = fakeLocation({
       hostname: 'trade.kotakneo.com',
