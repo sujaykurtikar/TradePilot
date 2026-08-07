@@ -58,15 +58,6 @@ const SLIPPAGE_MIN_TOLERANCE = 0.5;
  * tick, used here as a stated assumption, not a confirmed value.
  */
 const TICK_SIZE = 0.05;
-/**
- * Personal mode's default entry->TP and entry->SL gap, in index points,
- * seeded once when the mode is entered/re-entered (§buildPersonalSuggestionData).
- * Fixed points rather than a percentage: a 1m intraday chart's visible
- * price range is often only ~100-150 points wide, so this needs to be a
- * value the user actually asked for and can see, not a % that silently
- * scales into the invisible-off-screen range the wider the index trades.
- */
-const PERSONAL_LEVEL_GAP_POINTS = 50;
 
 interface ActiveConfirmContext {
   readonly suggestion: Suggestion;
@@ -546,39 +537,19 @@ export class Bootstrap {
    * Personal mode: idle, no strategy signal, no on-chart picker. Direction
    * (BUY) and option type (CE) are fixed — the only per-product decision
    * this mode makes for the user. TP/SL are seeded once from live price
-   * (§PERSONAL_LEVEL_GAP_POINTS below) so something is shown immediately,
-   * then held fixed until the user drags a pill (WidgetRoot's
-   * onManualLevelDragEnd) — a later price tick must not silently
-   * re-anchor a level the user may have already adjusted or is about to.
+   * (±0.15%) so something is shown immediately, then held fixed until the
+   * user drags a pill (WidgetRoot's onManualLevelDragEnd) — a later price
+   * tick must not silently re-anchor a level the user may have already
+   * adjusted or is about to.
    */
   private buildPersonalSuggestionData(mappedSymbol: string | null): WidgetSuggestionData {
     const livePrice = this.bridge?.lastBar()?.close ?? null;
 
-    // Temporary diagnostic (§ personal-mode TP/SL investigation) — logs
-    // every call so a session that goes from working to broken can be
-    // traced via the console instead of guessed at blind. Safe to remove
-    // once the intermittent-null-mappedSymbol / vanishing-pills reports
-    // are root-caused.
-    log.debug('personal mode: applyMarketData tick', {
-      livePrice,
-      mappedSymbol,
-      chartSymbol: this.bridge?.symbol() ?? null,
-      paneRect: this.bridge?.paneRect() ?? null,
-      personalLevelsBefore: this.personalLevels,
-    });
-
     if (this.personalLevels.tp === null && this.personalLevels.sl === null && livePrice !== null) {
-      const gap = this.safePersonalLevelGap();
       this.personalLevels = {
-        tp: Math.round((livePrice + gap) * 100) / 100,
-        sl: Math.round((livePrice - gap) * 100) / 100,
+        tp: Math.round(livePrice * 1.0015 * 100) / 100,
+        sl: Math.round(livePrice * 0.9985 * 100) / 100,
       };
-      log.debug('personal mode: seeded TP/SL', {
-        livePrice,
-        gap,
-        tp: this.personalLevels.tp,
-        sl: this.personalLevels.sl,
-      });
     }
 
     this.personalSuggestion =
@@ -608,66 +579,6 @@ export class Bootstrap {
       onTrade: () => this.handleTradeClick(),
       onTradeFocusChange: (focused) => this.handleTradeFocusChange(focused),
     };
-  }
-
-  /**
-   * A fixed points gap that fits a wide-zoom chart can still be entirely
-   * off a narrow-zoom 1m chart's visible price axis — priceToY has no
-   * value to map an out-of-range price to, so AnchorManager (correctly,
-   * per §7.1) hides a pill whose price is off-screen. That read as
-   * "TP/SL appeared, then vanished" even though the price itself never
-   * moved. Reads the chart's actual currently-visible price range (via
-   * paneRect + yToPrice, the same coordinate math the rest of the widget
-   * already trusts) and shrinks the gap to fit inside it, so the initial
-   * seed lands somewhere visible rather than gambling on a guessed
-   * timeframe. Falls back to the full default gap if the range can't be
-   * read (matches the "never guess, but don't stall on a maybe" pattern
-   * used elsewhere in this file).
-   */
-  private safePersonalLevelGap(): number {
-    const bridge = this.bridge;
-    if (bridge === null) {
-      log.debug('personal mode: gap fallback — no bridge');
-      return PERSONAL_LEVEL_GAP_POINTS;
-    }
-    const paneRect = bridge.paneRect();
-    if (paneRect === null) {
-      log.debug('personal mode: gap fallback — paneRect() null');
-      return PERSONAL_LEVEL_GAP_POINTS;
-    }
-    const topPrice = bridge.yToPrice(paneRect.y);
-    const bottomPrice = bridge.yToPrice(paneRect.bottom);
-    if (topPrice === null || bottomPrice === null) {
-      log.debug('personal mode: gap fallback — yToPrice() null', {
-        paneRect,
-        topPrice,
-        bottomPrice,
-      });
-      return PERSONAL_LEVEL_GAP_POINTS;
-    }
-
-    const visibleRange = Math.abs(topPrice - bottomPrice);
-    // Leave headroom so the pill itself (not just the price line) stays
-    // clear of the pane edge, and so entry/TP/SL don't crowd on top of
-    // each other on a very tight zoom.
-    const maxSafeGap = visibleRange * 0.35;
-    if (maxSafeGap <= 0) {
-      log.debug('personal mode: gap fallback — non-positive visible range', {
-        topPrice,
-        bottomPrice,
-        visibleRange,
-      });
-      return PERSONAL_LEVEL_GAP_POINTS;
-    }
-    const gap = Math.min(PERSONAL_LEVEL_GAP_POINTS, maxSafeGap);
-    log.debug('personal mode: gap computed from visible range', {
-      topPrice,
-      bottomPrice,
-      visibleRange,
-      maxSafeGap,
-      gap,
-    });
-    return gap;
   }
 
   /** §3/R-OCO: "the single most dangerous state in the system" — open position(s) with no reachable backend to enforce their SL/TP. */
