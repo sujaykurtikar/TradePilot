@@ -280,6 +280,125 @@ describe('WidgetRoot — §P6t position-mode TP/SL drag', () => {
   });
 });
 
+describe('WidgetRoot — §6 personal trading mode', () => {
+  let widget: WidgetRoot | null = null;
+
+  afterEach(() => {
+    widget?.destroy();
+    widget = null;
+    document.body.innerHTML = '';
+  });
+
+  it('dragging a pill pre-trade in strategy mode never calls onManualLevelDragEnd', async () => {
+    const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
+    const onManualLevelDragEnd = vi.fn();
+    widget = makeWidget({ bridge, onManualLevelDragEnd, initialTradingMode: 'strategy' });
+    await widget.mount();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const handle = shadow?.querySelector('.tp-pill--tp .tp-pill__handle') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    handle.hasPointerCapture = vi.fn().mockReturnValue(true);
+
+    handle.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1, clientX: 0, clientY: 0, button: 0 }),
+    );
+    handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: -50 }));
+
+    expect(onManualLevelDragEnd).not.toHaveBeenCalled();
+  });
+
+  it('dragging a pill pre-trade in personal mode calls onManualLevelDragEnd with the bridge-computed price', async () => {
+    const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
+    const onManualLevelDragEnd = vi.fn();
+    widget = makeWidget({ bridge, onManualLevelDragEnd, initialTradingMode: 'personal' });
+    await widget.mount();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const handle = shadow?.querySelector('.tp-pill--tp .tp-pill__handle') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    handle.hasPointerCapture = vi.fn().mockReturnValue(true);
+
+    handle.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1, clientX: 0, clientY: 0, button: 0 }),
+    );
+    // Drag UP by 50px -> with this bridge's 1000-p mapping, that's +50 price.
+    handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: -50 }));
+
+    expect(onManualLevelDragEnd).toHaveBeenCalledWith('tp', 24176);
+  });
+
+  it('a position open still wins over personal mode — onPositionRiskDrag fires, not onManualLevelDragEnd', async () => {
+    const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
+    const onManualLevelDragEnd = vi.fn();
+    const onPositionRiskDrag = vi.fn();
+    widget = makeWidget({
+      bridge,
+      onManualLevelDragEnd,
+      onPositionRiskDrag,
+      initialTradingMode: 'personal',
+    });
+    await widget.mount();
+    widget.setPosition({
+      positionId: 'pos-1',
+      account: 'acct-1',
+      symbol: 'NIFTY',
+      optionType: 'CE',
+      strike: 24100,
+      entrySpot: 24080,
+      sl: 24050,
+      tp: 24150,
+      delta: 0.5,
+      unrealizedPnl: 100,
+      tpState: { kind: 'confirmed' },
+      slState: { kind: 'confirmed' },
+    });
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const handle = shadow?.querySelector('.tp-pill--tp .tp-pill__handle') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    handle.hasPointerCapture = vi.fn().mockReturnValue(true);
+
+    handle.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1, clientX: 0, clientY: 0, button: 0 }),
+    );
+    handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: -50 }));
+
+    expect(onManualLevelDragEnd).not.toHaveBeenCalled();
+    expect(onPositionRiskDrag).toHaveBeenCalledWith('tp', 24200);
+  });
+
+  it('clicking the on-chart toggle flips trading mode and fires onTradingModeChange', async () => {
+    const onTradingModeChange = vi.fn();
+    widget = makeWidget({ onTradingModeChange, initialTradingMode: 'strategy' });
+    await widget.mount();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const toggle = shadow?.querySelector('.tp-mode-toggle') as HTMLButtonElement;
+    expect(toggle.textContent).toBe('Strategy');
+
+    toggle.click();
+    expect(onTradingModeChange).toHaveBeenCalledWith('personal');
+    expect(toggle.textContent).toBe('Personal');
+  });
+
+  it('setTradingMode() applies an externally-driven mode change without re-firing onTradingModeChange', async () => {
+    const onTradingModeChange = vi.fn();
+    widget = makeWidget({ onTradingModeChange, initialTradingMode: 'strategy' });
+    await widget.mount();
+
+    widget.setTradingMode('personal');
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const toggle = shadow?.querySelector('.tp-mode-toggle') as HTMLButtonElement;
+    expect(toggle.textContent).toBe('Personal');
+    expect(onTradingModeChange).not.toHaveBeenCalled();
+  });
+});
+
 describe('WidgetRoot — §7.1/§3 visibility and staleness controls', () => {
   let widget: WidgetRoot | null = null;
 

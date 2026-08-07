@@ -31,6 +31,7 @@ import type {
 } from '../core/messaging/messages';
 import type { MarketDataSnapshot } from '../core/api/types';
 import type { Suggestion } from '../models/Suggestion';
+import type { TradingMode } from '../models/TradingMode';
 import type { DraggablePosition, Position, RiskLevelReconciliationState } from '../models/Position';
 import type { TradeConfirmDetails } from '../widget/components/SuggestionCard';
 import { getLogger } from '../utils/logger';
@@ -57,12 +58,37 @@ const SLIPPAGE_MIN_TOLERANCE = 0.5;
  * tick, used here as a stated assumption, not a confirmed value.
  */
 const TICK_SIZE = 0.05;
+/** §6 personal-mode strike stepper: clamp to a sane range either side of ATM. */
+const MAX_STRIKE_OFFSET_STEPS = 10;
 
 interface ActiveConfirmContext {
   readonly suggestion: Suggestion;
   readonly lots: number;
   readonly lotSize: number | null;
+  /**
+   * Personal mode's ATM+offset strike, stamped at Trade-click time.
+   * Present (even if null) only for a personal-mode confirm; strategy mode
+   * omits this field entirely so handleConfirmClick's `!== undefined`
+   * check falls through to its existing atmStrike lookup — see §6's
+   * "one deliberate exception" note.
+   */
+  readonly resolvedStrike?: number | null;
 }
+
+/** §6 personal mode: direction/strike offset the user picked, and TP/SL they've dragged onto the chart pre-trade. Reset whenever trading mode changes (locally or via storage). */
+interface PersonalTradeState {
+  readonly direction: 'BUY' | 'SELL' | null;
+  readonly strikeOffsetSteps: number;
+  readonly tp: number | null;
+  readonly sl: number | null;
+}
+
+const EMPTY_PERSONAL_STATE: PersonalTradeState = {
+  direction: null,
+  strikeOffsetSteps: 0,
+  tp: null,
+  sl: null,
+};
 
 /**
  * §P6t: a drag-in-flight for one position/field, held here so it survives
@@ -130,6 +156,14 @@ export class Bootstrap {
 
   private hostConfig: InternalApiHostConfig | null = null;
   private latestSnapshot: MarketDataSnapshot | null = null;
+
+  // §6 personal trading mode.
+  private tradingMode: TradingMode = 'strategy';
+  private personalState: PersonalTradeState = EMPTY_PERSONAL_STATE;
+  /** Synthetic Suggestion built from personalState, rebuilt every applyMarketData pass while in personal mode — see buildPersonalSuggestionData(). */
+  private personalSuggestion: Suggestion | null = null;
+  /** ATM+offset strike resolved alongside personalSuggestion — stamped onto activeConfirmContext so handleConfirmClick doesn't fall back to the bare atmStrike lookup (§6). */
+  private personalResolvedStrike: number | null = null;
   private readonly onRuntimeMessage = (message: unknown): void => {
     if (isDataUpdateMessage(message)) {
       this.applyMarketData(message.snapshot);
@@ -178,6 +212,7 @@ export class Bootstrap {
 
     const state = await this.storage.load();
     this.lastKnownEnabled = state.enabled;
+    this.tradingMode = state.tradingMode;
     this.offsetsWereEmpty = Object.keys(state.widgetOffsets).length === 0;
     this.storageUnsubscribe = this.storage.onChange((next) => this.handleStorageChange(next));
 
@@ -208,6 +243,15 @@ export class Bootstrap {
       this.widget.resetOffsets();
     }
     this.offsetsWereEmpty = nowEmpty;
+
+    // §6: the side panel toggle (or another tab) switched trading mode —
+    // sync the on-chart widget the same way widgetCollapsed above does.
+    if (next.tradingMode !== this.tradingMode) {
+      this.tradingMode = next.tradingMode;
+      this.personalState = EMPTY_PERSONAL_STATE;
+      this.widget.setTradingMode(next.tradingMode);
+      if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+    }
   }
 
   private async handleNavigation(): Promise<void> {
@@ -319,6 +363,7 @@ export class Bootstrap {
     const suggestionConfig = buildDemoSuggestionConfig(spot);
     const persistedState = await this.storage.load();
     if (this.disposed || token !== this.runToken) return;
+    this.tradingMode = persistedState.tradingMode;
 
     const widget = new WidgetRoot({
       bridge,
@@ -327,11 +372,22 @@ export class Bootstrap {
       initialManualReason: initialState.reason,
       initialCollapsed: persistedState.widgetCollapsed,
       initialOffsets: persistedState.widgetOffsets,
+      initialTradingMode: this.tradingMode,
       onCollapsedChange: (collapsed) => {
         void this.storage.patch({ widgetCollapsed: collapsed });
       },
       onOffsetChange: (id, offset) => this.persistOffsetDebounced(id, offset),
       onPositionRiskDrag: (variant, newPrice) => this.handlePositionRiskDrag(variant, newPrice),
+      onTradingModeChange: (mode) => {
+        this.tradingMode = mode;
+        this.personalState = EMPTY_PERSONAL_STATE;
+        void this.storage.patch({ tradingMode: mode });
+        if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+      },
+      onManualLevelDragEnd: (variant, newPrice) => {
+        this.personalState = { ...this.personalState, [variant]: newPrice };
+        if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+      },
       suggestion: {
         symbolLabel: suggestionConfig.strikeLabel,
         subLabel: `Entry ${suggestionConfig.entry}`,
@@ -465,6 +521,14 @@ export class Bootstrap {
     // §7.1: "dim + stale + Trade disabled" — the dim is specifically for
     // genuinely stale data, not for a fresh "no suggestion right now".
     widget.setDataStale(!fresh);
+
+    // §6: personal mode never looks at snapshot.suggestion — the card is
+    // built entirely from the user's own picks + chartContext instead.
+    if (this.tradingMode === 'personal') {
+      widget.updateSuggestion(this.buildPersonalSuggestionData(snapshot, mappedSymbol));
+      return;
+    }
+
     const suggestion = snapshot.suggestion;
     const hasEntry = suggestion !== null && suggestion.recommendedLtp !== null;
 
@@ -494,6 +558,95 @@ export class Bootstrap {
       onTradeFocusChange: (focused) => this.handleTradeFocusChange(focused),
     };
     widget.updateSuggestion(suggestionData);
+  }
+
+  /**
+   * §6: builds the on-chart card entirely from personalState + the
+   * snapshot's chartContext — never from snapshot.suggestion. Also
+   * rebuilds `personalSuggestion`/`personalResolvedStrike`, the synthetic
+   * Suggestion-shaped object that lets handleTradeClick/handleConfirmClick
+   * reuse the existing confirm/submit pipeline completely unchanged (§R-P6)
+   * — only where direction/strike/sl/tp come from differs.
+   */
+  private buildPersonalSuggestionData(
+    snapshot: MarketDataSnapshot,
+    mappedSymbol: string | null,
+  ): WidgetSuggestionData {
+    const atmStrike = snapshot.chartContext?.atmStrike ?? null;
+    const strikeInterval = snapshot.chartContext?.strikeInterval ?? null;
+    // §7.1 "no ?? 0, ever": never fabricate a strike when the chart hasn't
+    // told us the ATM/interval yet — stays null, card shows staleReason.
+    const strike =
+      atmStrike !== null && strikeInterval !== null
+        ? atmStrike + strikeInterval * this.personalState.strikeOffsetSteps
+        : null;
+    const optionType: 'CE' | 'PE' | null =
+      this.personalState.direction === 'BUY'
+        ? 'CE'
+        : this.personalState.direction === 'SELL'
+          ? 'PE'
+          : null;
+
+    const symbolLabel =
+      mappedSymbol !== null && optionType !== null && strike !== null
+        ? `${mappedSymbol} ${optionType}`
+        : (mappedSymbol ?? 'TradePilot');
+
+    const livePrice = this.bridge?.lastBar()?.close ?? null;
+    const direction = this.personalState.direction;
+
+    this.personalResolvedStrike = strike;
+    this.personalSuggestion =
+      direction !== null && optionType !== null && livePrice !== null && mappedSymbol !== null
+        ? {
+            direction,
+            recommendedSymbol: mappedSymbol,
+            recommendedOptionType: optionType,
+            recommendedLtp: livePrice,
+            sl: this.personalState.sl,
+            tp: this.personalState.tp,
+            compositeScore: null,
+            rationale: ['Personal — manually entered, no strategy suggestion.'],
+            computedAtPrice: livePrice,
+            receivedAtMs: Date.now(),
+          }
+        : null;
+
+    return {
+      symbolLabel,
+      subLabel: livePrice !== null ? `LTP ${livePrice}` : null,
+      livePrice: () => this.bridge?.lastBar()?.close ?? null,
+      // Straight from personalState — null until the user drags a level.
+      // Never defaulted to a computed percentage (§6's explicit product
+      // decision: the user drags to set TP/SL, full stop).
+      tp: this.personalState.tp,
+      sl: this.personalState.sl,
+      tradeDisabled: direction === null || strike === null,
+      staleReason: strike === null ? 'waiting for chart data' : null,
+      onTrade: () => this.handleTradeClick(),
+      onTradeFocusChange: (focused) => this.handleTradeFocusChange(focused),
+      personalEntry: {
+        direction: this.personalState.direction,
+        strikeOffsetSteps: this.personalState.strikeOffsetSteps,
+        onPickDirection: (picked) => this.handlePersonalPickDirection(picked),
+        onStepStrike: (delta) => this.handlePersonalStepStrike(delta),
+      },
+    };
+  }
+
+  /** §6: picking a side resets the strike stepper — same as (re-)entering personal mode. */
+  private handlePersonalPickDirection(direction: 'BUY' | 'SELL'): void {
+    this.personalState = { ...this.personalState, direction, strikeOffsetSteps: 0 };
+    if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+  }
+
+  private handlePersonalStepStrike(delta: 1 | -1): void {
+    const next = Math.max(
+      -MAX_STRIKE_OFFSET_STEPS,
+      Math.min(MAX_STRIKE_OFFSET_STEPS, this.personalState.strikeOffsetSteps + delta),
+    );
+    this.personalState = { ...this.personalState, strikeOffsetSteps: next };
+    if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
   }
 
   /** §3/R-OCO: "the single most dangerous state in the system" — open position(s) with no reachable backend to enforce their SL/TP. */
@@ -694,9 +847,18 @@ export class Bootstrap {
     this.isFrozen = true;
     const snapshot = this.frozenSnapshot ?? this.latestSnapshot;
     this.frozenSnapshot = snapshot;
-    const suggestion = snapshot?.suggestion ?? null;
+    // §6: personal mode reads the synthetic Suggestion built alongside
+    // personalState (buildPersonalSuggestionData) instead of the
+    // snapshot's backend-computed one — everything downstream of this line
+    // (confirm view, slippage guard, submit) is identical either way.
+    const suggestion =
+      this.tradingMode === 'personal' ? this.personalSuggestion : (snapshot?.suggestion ?? null);
     if (suggestion === null || suggestion.recommendedLtp === null) {
-      widget.showToast('No suggestion available to trade');
+      widget.showToast(
+        this.tradingMode === 'personal'
+          ? 'Pick a direction and wait for live chart data before trading'
+          : 'No suggestion available to trade',
+      );
       this.isFrozen = false;
       this.frozenSnapshot = null;
       return;
@@ -706,6 +868,7 @@ export class Bootstrap {
       suggestion,
       lots: DEFAULT_LOTS,
       lotSize: snapshot?.chartContext?.lotSize ?? null,
+      ...(this.tradingMode === 'personal' ? { resolvedStrike: this.personalResolvedStrike } : {}),
     };
     this.confirmShowing = true;
     widget.setTradeConfirm(this.buildTradeConfirmDetails(false));
@@ -759,7 +922,17 @@ export class Bootstrap {
     // strike from /chart/state is the only numeric strike the documented
     // API surface actually provides. Documented assumption, not a
     // guess made silently.
-    const strike = this.latestSnapshot?.chartContext?.atmStrike ?? null;
+    //
+    // §6 exception: a personal-mode confirm stamps its ATM+offset strike
+    // onto activeConfirmContext.resolvedStrike (even when that resolves to
+    // null — chart data not ready yet), so `!== undefined` here means
+    // "this is a personal-mode confirm, use its own resolved strike,
+    // never silently substitute the bare ATM." Strategy mode never sets
+    // the field at all, so it falls through to the lookup above unchanged.
+    const strike =
+      ctx.resolvedStrike !== undefined
+        ? ctx.resolvedStrike
+        : (this.latestSnapshot?.chartContext?.atmStrike ?? null);
     if (suggestion.recommendedOptionType === null || strike === null) {
       widget.showToast('Cannot place order — missing strike or option type.');
       this.resetConfirmState();

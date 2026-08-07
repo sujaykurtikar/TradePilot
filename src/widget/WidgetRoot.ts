@@ -13,6 +13,7 @@
 
 import type { ChartBridge } from '../bridge/ChartBridge';
 import type { DraggablePosition } from '../models/Position';
+import type { TradingMode } from '../models/TradingMode';
 import { AnchorManager, type PaneRectOrNull } from './managers/AnchorManager';
 import { DragManager, type Offset } from './managers/DragManager';
 import { StateManager } from './managers/StateManager';
@@ -20,6 +21,7 @@ import { ShadowHost } from './ShadowHost';
 import { createLevelPill, type LevelPillComponent } from './components/LevelPill';
 import {
   createSuggestionCard,
+  type PersonalEntryProps,
   type SuggestionCardComponent,
   type TradeConfirmDetails,
 } from './components/SuggestionCard';
@@ -40,6 +42,12 @@ export interface WidgetSuggestionData {
   readonly onTrade: () => void;
   /** §P6: freeze the suggestion on hover/focus of Trade — levels must not shift mid-decision. */
   readonly onTradeFocusChange?: (focused: boolean) => void;
+  /**
+   * Non-null (personal mode, pre-trade) — passed straight through to
+   * SuggestionCard's own `personalEntry` prop (see its doc comment).
+   * Null/undefined preserves today's normal Suggested/Position card.
+   */
+  readonly personalEntry?: PersonalEntryProps | null;
 }
 
 /** §R-P2's degradation ladder: 'anchored' = full price tracking, 'manual' = fixed draggable panel + badge (coordinate math is untrusted, but values are still shown/tradeable). */
@@ -67,6 +75,18 @@ export interface WidgetRootOptions {
    * POST /position/risk.
    */
   readonly onPositionRiskDrag?: (variant: 'tp' | 'sl', newPrice: number) => void;
+  /** §TradingMode: which on-chart trading mode to start in — defaults to 'strategy' (today's behavior). */
+  readonly initialTradingMode?: TradingMode;
+  /** Fired when the user clicks the on-chart Strategy/Personal toggle. */
+  readonly onTradingModeChange?: (mode: TradingMode) => void;
+  /**
+   * Pre-trade TP/SL pill drag-end in personal mode ONLY (this.position ===
+   * null && tradingMode === 'personal') — the parallel path to
+   * onPositionRiskDrag for a trade that hasn't been placed yet. Computes
+   * the target price via the exact same bridge math as
+   * onPositionRiskDrag; the caller stores it as the personal-mode TP/SL.
+   */
+  readonly onManualLevelDragEnd?: (variant: 'tp' | 'sl', newPrice: number) => void;
 }
 
 const TARGET_TP = 'level-pill-tp';
@@ -97,6 +117,10 @@ export class WidgetRoot {
   private suggestion: WidgetSuggestionData;
   private position: DraggablePosition | null = null;
   private readonly onPositionRiskDrag: ((variant: 'tp' | 'sl', newPrice: number) => void) | null;
+  private readonly onManualLevelDragEnd: ((variant: 'tp' | 'sl', newPrice: number) => void) | null;
+  private tradingMode: TradingMode;
+  private readonly onTradingModeChange: ((mode: TradingMode) => void) | null;
+  private readonly tradingModeToggle: HTMLButtonElement;
   private unsubscribeState: (() => void) | null = null;
 
   private readonly onCollapsedChange: ((collapsed: boolean) => void) | null;
@@ -119,8 +143,22 @@ export class WidgetRoot {
     this.stateManager = new StateManager({ collapsed: opts.initialCollapsed ?? false });
     this.onCollapsedChange = opts.onCollapsedChange ?? null;
     this.onPositionRiskDrag = opts.onPositionRiskDrag ?? null;
+    this.onManualLevelDragEnd = opts.onManualLevelDragEnd ?? null;
+    this.tradingMode = opts.initialTradingMode ?? 'strategy';
+    this.onTradingModeChange = opts.onTradingModeChange ?? null;
     this.mode = opts.initialMode ?? 'anchored';
     this.initialManualReason = opts.initialManualReason ?? '';
+
+    this.tradingModeToggle = document.createElement('button');
+    this.tradingModeToggle.type = 'button';
+    this.tradingModeToggle.className = 'tp-mode-toggle';
+    this.tradingModeToggle.addEventListener('click', () => {
+      const next: TradingMode = this.tradingMode === 'personal' ? 'strategy' : 'personal';
+      this.tradingMode = next;
+      this.renderTradingModeToggle();
+      this.renderSuggestionCard();
+      this.onTradingModeChange?.(next);
+    });
 
     this.manualBadge = document.createElement('div');
     this.manualBadge.className = 'tp-badge-manual';
@@ -156,6 +194,7 @@ export class WidgetRoot {
       tradeDisabled: opts.suggestion.tradeDisabled ?? false,
       staleReason: opts.suggestion.staleReason ?? null,
       onTrade: opts.suggestion.onTrade,
+      personalEntry: opts.suggestion.personalEntry ?? null,
     });
 
     for (const el of [this.tpPill.element, this.slPill.element, this.suggestionCard.element]) {
@@ -189,8 +228,10 @@ export class WidgetRoot {
       this.puck,
       this.manualBadge,
       this.unprotectedBanner,
+      this.tradingModeToggle,
     );
     if (this.demoBadge) this.host.layer.appendChild(this.demoBadge);
+    this.renderTradingModeToggle();
 
     // Solo TP/SL drags ride the price axis — horizontal movement would
     // just detach the pill from the connector line for no reason, so it's
@@ -274,6 +315,31 @@ export class WidgetRoot {
   /** Popup's "reset position" (§P1) — clears all drag offsets; AnchorManager picks up the zeroed offsets next frame automatically. */
   resetOffsets(): void {
     this.dragManager.resetAll();
+  }
+
+  private renderTradingModeToggle(): void {
+    const personal = this.tradingMode === 'personal';
+    this.tradingModeToggle.textContent = personal ? 'Personal' : 'Strategy';
+    this.tradingModeToggle.classList.toggle('tp-mode-toggle--personal', personal);
+    this.tradingModeToggle.setAttribute(
+      'aria-label',
+      personal
+        ? 'Switch to Strategy mode (backend-suggested trade)'
+        : 'Switch to Personal mode (pick direction/strike yourself)',
+    );
+  }
+
+  /**
+   * Applies a trading-mode change that originated elsewhere (side panel
+   * toggle, another tab's storage write) without re-announcing it via
+   * onTradingModeChange — that write already happened. Mirrors
+   * setCollapsedExternal's doc comment.
+   */
+  setTradingMode(mode: TradingMode): void {
+    if (this.tradingMode === mode) return;
+    this.tradingMode = mode;
+    this.renderTradingModeToggle();
+    this.renderSuggestionCard();
   }
 
   /** Called by content/Bootstrap.ts when new suggestion data arrives (hardcoded for Day-1, live from P5). */
@@ -375,7 +441,6 @@ export class WidgetRoot {
    * just persisting a cosmetic offset.
    */
   private handleLevelDragEnd(id: string, offset: Offset): void {
-    if (this.position === null) return; // pre-trade: purely cosmetic, nothing more to do
     if (id !== TARGET_TP && id !== TARGET_SL) return;
     if (offset.dx === 0 && offset.dy === 0) return; // a zero-delta commit (e.g. a plain click) isn't a drag
 
@@ -387,6 +452,16 @@ export class WidgetRoot {
     if (baseY === null) return; // §7.1: never guess a price from an unavailable coordinate
     const newPrice = this.bridge.yToPrice(baseY + offset.dy);
     if (newPrice === null) return;
+
+    if (this.position === null) {
+      // Pre-trade: cosmetic-only in strategy mode (§P3), but in personal
+      // mode this IS the mechanism for setting the user's own TP/SL — same
+      // math as the position-mode branch below, different destination.
+      if (this.tradingMode === 'personal') {
+        this.onManualLevelDragEnd?.(variant, newPrice);
+      }
+      return;
+    }
 
     this.onPositionRiskDrag?.(variant, newPrice);
   }
@@ -403,6 +478,7 @@ export class WidgetRoot {
         ? { onTradeFocusChange: this.suggestion.onTradeFocusChange }
         : {}),
       confirm: this.currentConfirm,
+      personalEntry: this.suggestion.personalEntry ?? null,
     });
     if (this.mode === 'manual') this.applyManualLayout();
   }

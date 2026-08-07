@@ -272,6 +272,66 @@
   font-weight: 600;
 }
 
+/* ---------- Personal-mode entry view ---------- */
+
+.tp-card__entry {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--tp-space-2);
+}
+
+.tp-card__entry-direction {
+  display: flex;
+  gap: var(--tp-space-2);
+}
+
+.tp-card__entry-dir-btn {
+  appearance: none;
+  flex: 1;
+  border: 1px solid var(--tp-color-border);
+  border-radius: var(--tp-radius-sm);
+  padding: var(--tp-space-1) var(--tp-space-2);
+  background: transparent;
+  color: var(--tp-color-text);
+  font-size: var(--tp-font-size-sm);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+.tp-card__entry-dir-btn--buy.tp-card__entry-dir-btn--active {
+  background: var(--tp-color-tp);
+  border-color: var(--tp-color-tp);
+  color: #fff;
+}
+.tp-card__entry-dir-btn--sell.tp-card__entry-dir-btn--active {
+  background: var(--tp-color-sl);
+  border-color: var(--tp-color-sl);
+  color: #fff;
+}
+
+.tp-card__entry-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tp-space-2);
+}
+
+.tp-card__entry-step-btn {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--tp-color-border);
+}
+
+.tp-card__entry-step-label {
+  flex: 1;
+  text-align: center;
+  font-size: var(--tp-font-size-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- Trade confirm view (§P6) ---------- */
 
 .tp-card__confirm {
@@ -395,6 +455,30 @@
   font-weight: 400;
   opacity: 0.85;
   font-size: 10px;
+}
+
+/* Strategy/Personal on-chart toggle — a small standalone pill in a fixed
+   corner of the widget layer, independent of AnchorManager (§TradingMode). */
+.tp-mode-toggle {
+  position: fixed;
+  top: 8px;
+  right: 120px;
+  appearance: none;
+  border: 1px solid var(--tp-color-border);
+  border-radius: var(--tp-radius-sm);
+  background: var(--tp-color-bg);
+  color: var(--tp-color-text-dim);
+  font-size: var(--tp-font-size-sm);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  cursor: pointer;
+  pointer-events: auto;
+  z-index: 2147483001;
+}
+.tp-mode-toggle--personal {
+  color: var(--tp-color-accent);
+  border-color: var(--tp-color-accent);
 }
 
 /* R-OCO: unmissable, not a subtle tint. Reserved for wiring in P6/P6t. */
