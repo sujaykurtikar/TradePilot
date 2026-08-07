@@ -13,6 +13,7 @@
 
 import type { ChartBridge } from '../bridge/ChartBridge';
 import type { DraggablePosition } from '../models/Position';
+import type { TradingMode } from '../models/TradingMode';
 import { AnchorManager, type PaneRectOrNull } from './managers/AnchorManager';
 import { DragManager, type Offset } from './managers/DragManager';
 import { StateManager } from './managers/StateManager';
@@ -67,6 +68,17 @@ export interface WidgetRootOptions {
    * POST /position/risk.
    */
   readonly onPositionRiskDrag?: (variant: 'tp' | 'sl', newPrice: number) => void;
+  /** Which on-chart trading mode to start in — defaults to 'strategy' (today's behavior). No on-chart UI for this; the side panel is the only place it's switched. */
+  readonly initialTradingMode?: TradingMode;
+  /**
+   * Pre-trade TP/SL pill drag-end in personal mode ONLY (this.position ===
+   * null && tradingMode === 'personal') — the parallel path to
+   * onPositionRiskDrag for a trade that hasn't been placed yet. Computes
+   * the target price via the exact same bridge math as
+   * onPositionRiskDrag; the caller stores it as the personal-mode TP/SL.
+   * In strategy mode a pre-trade drag stays purely cosmetic, as today.
+   */
+  readonly onManualLevelDragEnd?: (variant: 'tp' | 'sl', newPrice: number) => void;
 }
 
 const TARGET_TP = 'level-pill-tp';
@@ -97,6 +109,8 @@ export class WidgetRoot {
   private suggestion: WidgetSuggestionData;
   private position: DraggablePosition | null = null;
   private readonly onPositionRiskDrag: ((variant: 'tp' | 'sl', newPrice: number) => void) | null;
+  private readonly onManualLevelDragEnd: ((variant: 'tp' | 'sl', newPrice: number) => void) | null;
+  private tradingMode: TradingMode;
   private unsubscribeState: (() => void) | null = null;
 
   private readonly onCollapsedChange: ((collapsed: boolean) => void) | null;
@@ -119,6 +133,8 @@ export class WidgetRoot {
     this.stateManager = new StateManager({ collapsed: opts.initialCollapsed ?? false });
     this.onCollapsedChange = opts.onCollapsedChange ?? null;
     this.onPositionRiskDrag = opts.onPositionRiskDrag ?? null;
+    this.onManualLevelDragEnd = opts.onManualLevelDragEnd ?? null;
+    this.tradingMode = opts.initialTradingMode ?? 'strategy';
     this.mode = opts.initialMode ?? 'anchored';
     this.initialManualReason = opts.initialManualReason ?? '';
 
@@ -276,6 +292,17 @@ export class WidgetRoot {
     this.dragManager.resetAll();
   }
 
+  /**
+   * Applies a trading-mode change that originated elsewhere (side panel
+   * toggle, another tab's storage write) — no on-chart UI reflects this
+   * directly, it only affects whether handleLevelDragEnd's pre-trade
+   * branch treats a drag as cosmetic (strategy mode, unchanged) or as
+   * setting the personal-mode TP/SL (personal mode).
+   */
+  setTradingMode(mode: TradingMode): void {
+    this.tradingMode = mode;
+  }
+
   /** Called by content/Bootstrap.ts when new suggestion data arrives (hardcoded for Day-1, live from P5). */
   updateSuggestion(next: WidgetSuggestionData): void {
     this.suggestion = next;
@@ -375,7 +402,6 @@ export class WidgetRoot {
    * just persisting a cosmetic offset.
    */
   private handleLevelDragEnd(id: string, offset: Offset): void {
-    if (this.position === null) return; // pre-trade: purely cosmetic, nothing more to do
     if (id !== TARGET_TP && id !== TARGET_SL) return;
     if (offset.dx === 0 && offset.dy === 0) return; // a zero-delta commit (e.g. a plain click) isn't a drag
 
@@ -387,6 +413,17 @@ export class WidgetRoot {
     if (baseY === null) return; // §7.1: never guess a price from an unavailable coordinate
     const newPrice = this.bridge.yToPrice(baseY + offset.dy);
     if (newPrice === null) return;
+
+    if (this.position === null) {
+      // Pre-trade: cosmetic-only in strategy mode (§P3, unchanged), but in
+      // personal mode this IS the mechanism for setting the user's own
+      // TP/SL — same math as the position-mode branch below, different
+      // destination.
+      if (this.tradingMode === 'personal') {
+        this.onManualLevelDragEnd?.(variant, newPrice);
+      }
+      return;
+    }
 
     this.onPositionRiskDrag?.(variant, newPrice);
   }

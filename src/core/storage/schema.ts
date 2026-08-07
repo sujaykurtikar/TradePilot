@@ -4,6 +4,8 @@
  * migration, not a silent shape drift that crashes on read.
  */
 
+import type { TradingMode } from '../../models/TradingMode';
+
 export interface WidgetOffset {
   readonly dx: number;
   readonly dy: number;
@@ -32,16 +34,34 @@ export interface StorageSchemaV2 {
   readonly widgetHiddenReason: string | null;
 }
 
-export type StorageSchema = StorageSchemaV2;
+/**
+ * v3 adds `tradingMode` — the explicit on-chart trading mode toggle
+ * ('strategy' = today's backend-suggested trade, 'personal' = user picks
+ * direction/strike and drags TP/SL themselves; see
+ * src/models/TradingMode.ts). Explicit, not derived from anything else —
+ * an existing install with no opinion defaults to 'strategy' so it keeps
+ * behaving exactly as it does today until the user deliberately switches it.
+ */
+export interface StorageSchemaV3 {
+  readonly version: 3;
+  readonly enabled: boolean;
+  readonly widgetCollapsed: boolean;
+  readonly widgetOffsets: Readonly<Record<string, WidgetOffset>>;
+  readonly widgetHiddenReason: string | null;
+  readonly tradingMode: TradingMode;
+}
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export type StorageSchema = StorageSchemaV3;
+
+export const CURRENT_SCHEMA_VERSION = 3;
 
 export const DEFAULT_STORAGE: StorageSchema = {
-  version: 2,
+  version: 3,
   enabled: true,
   widgetCollapsed: false,
   widgetOffsets: {},
   widgetHiddenReason: null,
+  tradingMode: 'strategy',
 };
 
 export const STORAGE_KEY = 'tradepilot_state';

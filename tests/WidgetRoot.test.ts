@@ -278,6 +278,89 @@ describe('WidgetRoot — §P6t position-mode TP/SL drag', () => {
 
     expect(onPositionRiskDrag).not.toHaveBeenCalled();
   });
+
+  it('dragging a pill pre-trade in strategy mode (default) never calls onManualLevelDragEnd either', async () => {
+    const onManualLevelDragEnd = vi.fn();
+    widget = makeWidget({ onManualLevelDragEnd });
+    await widget.mount();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const handle = shadow?.querySelector('.tp-pill--tp .tp-pill__handle') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    handle.hasPointerCapture = vi.fn().mockReturnValue(true);
+
+    handle.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1, clientX: 0, clientY: 0, button: 0 }),
+    );
+    handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: -50 }));
+
+    expect(onManualLevelDragEnd).not.toHaveBeenCalled();
+  });
+
+  it('dragging a pill pre-trade in personal mode calls onManualLevelDragEnd with the bridge-computed price', async () => {
+    const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
+    const onManualLevelDragEnd = vi.fn();
+    const onPositionRiskDrag = vi.fn();
+    widget = makeWidget({
+      bridge,
+      initialTradingMode: 'personal',
+      onManualLevelDragEnd,
+      onPositionRiskDrag,
+      suggestion: {
+        symbolLabel: 'NIFTY CE',
+        livePrice: () => 24150,
+        tp: 24150,
+        sl: 24100,
+        onTrade: () => {},
+      },
+    });
+    await widget.mount();
+    // No setPosition() call — personal mode's whole point is pre-trade.
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const handle = shadow?.querySelector('.tp-pill--tp .tp-pill__handle') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    handle.hasPointerCapture = vi.fn().mockReturnValue(true);
+
+    handle.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1, clientX: 0, clientY: 0, button: 0 }),
+    );
+    handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: -50 }));
+
+    expect(onManualLevelDragEnd).toHaveBeenCalledWith('tp', 24200);
+    expect(onPositionRiskDrag).not.toHaveBeenCalled();
+  });
+
+  it('an open position still wins over personal mode — dragging goes to onPositionRiskDrag, not onManualLevelDragEnd', async () => {
+    const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
+    const onManualLevelDragEnd = vi.fn();
+    const onPositionRiskDrag = vi.fn();
+    widget = makeWidget({
+      bridge,
+      initialTradingMode: 'personal',
+      onManualLevelDragEnd,
+      onPositionRiskDrag,
+    });
+    await widget.mount();
+    widget.setPosition(makePosition()); // tp: 24150
+    await nextFrame();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const handle = shadow?.querySelector('.tp-pill--tp .tp-pill__handle') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    handle.hasPointerCapture = vi.fn().mockReturnValue(true);
+
+    handle.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1, clientX: 0, clientY: 0, button: 0 }),
+    );
+    handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: -50 }));
+
+    expect(onPositionRiskDrag).toHaveBeenCalledWith('tp', 24200);
+    expect(onManualLevelDragEnd).not.toHaveBeenCalled();
+  });
 });
 
 describe('WidgetRoot — §7.1/§3 visibility and staleness controls', () => {

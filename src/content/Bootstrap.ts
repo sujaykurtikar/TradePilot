@@ -31,6 +31,7 @@ import type {
 } from '../core/messaging/messages';
 import type { MarketDataSnapshot } from '../core/api/types';
 import type { Suggestion } from '../models/Suggestion';
+import type { TradingMode } from '../models/TradingMode';
 import type { DraggablePosition, Position, RiskLevelReconciliationState } from '../models/Position';
 import type { TradeConfirmDetails } from '../widget/components/SuggestionCard';
 import { getLogger } from '../utils/logger';
@@ -130,6 +131,18 @@ export class Bootstrap {
 
   private hostConfig: InternalApiHostConfig | null = null;
   private latestSnapshot: MarketDataSnapshot | null = null;
+
+  // Personal trading mode (side-panel toggle only — no on-chart UI for
+  // it). Chart stays idle: no strategy signal is used at all. A default
+  // TP/SL is seeded once from live price and shown immediately; the user
+  // drags the pills to adjust it exactly, same mechanics as an open
+  // position's drag. Direction/strike are fixed (BUY/CE, ATM) since there
+  // is deliberately no on-chart picker.
+  private tradingMode: TradingMode = 'strategy';
+  private personalLevels: { tp: number | null; sl: number | null } = { tp: null, sl: null };
+  /** Synthetic Suggestion built alongside personalLevels — lets handleTradeClick/handleConfirmClick reuse the existing confirm/submit pipeline unchanged. */
+  private personalSuggestion: Suggestion | null = null;
+
   private readonly onRuntimeMessage = (message: unknown): void => {
     if (isDataUpdateMessage(message)) {
       this.applyMarketData(message.snapshot);
@@ -178,6 +191,7 @@ export class Bootstrap {
 
     const state = await this.storage.load();
     this.lastKnownEnabled = state.enabled;
+    this.tradingMode = state.tradingMode;
     this.offsetsWereEmpty = Object.keys(state.widgetOffsets).length === 0;
     this.storageUnsubscribe = this.storage.onChange((next) => this.handleStorageChange(next));
 
@@ -208,6 +222,15 @@ export class Bootstrap {
       this.widget.resetOffsets();
     }
     this.offsetsWereEmpty = nowEmpty;
+
+    // Side panel toggle (or another tab) switched trading mode — reset
+    // any half-set personal levels and re-render from the new mode.
+    if (next.tradingMode !== this.tradingMode) {
+      this.tradingMode = next.tradingMode;
+      this.personalLevels = { tp: null, sl: null };
+      this.widget.setTradingMode(next.tradingMode);
+      if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+    }
   }
 
   private async handleNavigation(): Promise<void> {
@@ -319,6 +342,7 @@ export class Bootstrap {
     const suggestionConfig = buildDemoSuggestionConfig(spot);
     const persistedState = await this.storage.load();
     if (this.disposed || token !== this.runToken) return;
+    this.tradingMode = persistedState.tradingMode;
 
     const widget = new WidgetRoot({
       bridge,
@@ -327,11 +351,16 @@ export class Bootstrap {
       initialManualReason: initialState.reason,
       initialCollapsed: persistedState.widgetCollapsed,
       initialOffsets: persistedState.widgetOffsets,
+      initialTradingMode: this.tradingMode,
       onCollapsedChange: (collapsed) => {
         void this.storage.patch({ widgetCollapsed: collapsed });
       },
       onOffsetChange: (id, offset) => this.persistOffsetDebounced(id, offset),
       onPositionRiskDrag: (variant, newPrice) => this.handlePositionRiskDrag(variant, newPrice),
+      onManualLevelDragEnd: (variant, newPrice) => {
+        this.personalLevels = { ...this.personalLevels, [variant]: newPrice };
+        if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+      },
       suggestion: {
         symbolLabel: suggestionConfig.strikeLabel,
         subLabel: `Entry ${suggestionConfig.entry}`,
@@ -465,6 +494,14 @@ export class Bootstrap {
     // §7.1: "dim + stale + Trade disabled" — the dim is specifically for
     // genuinely stale data, not for a fresh "no suggestion right now".
     widget.setDataStale(!fresh);
+
+    // Personal mode never looks at snapshot.suggestion — the chart stays
+    // idle (no strategy signal), driven entirely by personalLevels.
+    if (this.tradingMode === 'personal') {
+      widget.updateSuggestion(this.buildPersonalSuggestionData(mappedSymbol));
+      return;
+    }
+
     const suggestion = snapshot.suggestion;
     const hasEntry = suggestion !== null && suggestion.recommendedLtp !== null;
 
@@ -494,6 +531,54 @@ export class Bootstrap {
       onTradeFocusChange: (focused) => this.handleTradeFocusChange(focused),
     };
     widget.updateSuggestion(suggestionData);
+  }
+
+  /**
+   * Personal mode: idle, no strategy signal, no on-chart picker. Direction
+   * (BUY) and option type (CE) are fixed — the only per-product decision
+   * this mode makes for the user. TP/SL are seeded once from live price
+   * (±0.5%) so something is shown immediately, then held fixed until the
+   * user drags a pill (WidgetRoot's onManualLevelDragEnd) — a later price
+   * tick must not silently re-anchor a level the user may have already
+   * adjusted or is about to.
+   */
+  private buildPersonalSuggestionData(mappedSymbol: string | null): WidgetSuggestionData {
+    const livePrice = this.bridge?.lastBar()?.close ?? null;
+
+    if (this.personalLevels.tp === null && this.personalLevels.sl === null && livePrice !== null) {
+      this.personalLevels = {
+        tp: Math.round(livePrice * 1.005 * 100) / 100,
+        sl: Math.round(livePrice * 0.995 * 100) / 100,
+      };
+    }
+
+    this.personalSuggestion =
+      livePrice !== null && mappedSymbol !== null
+        ? {
+            direction: 'BUY',
+            recommendedSymbol: mappedSymbol,
+            recommendedOptionType: 'CE',
+            recommendedLtp: livePrice,
+            sl: this.personalLevels.sl,
+            tp: this.personalLevels.tp,
+            compositeScore: null,
+            rationale: ['Personal — manual trade, no strategy suggestion.'],
+            computedAtPrice: livePrice,
+            receivedAtMs: Date.now(),
+          }
+        : null;
+
+    return {
+      symbolLabel: mappedSymbol !== null ? `${mappedSymbol} CE` : 'TradePilot',
+      subLabel: livePrice !== null ? `LTP ${livePrice}` : null,
+      livePrice: () => this.bridge?.lastBar()?.close ?? null,
+      tp: this.personalLevels.tp,
+      sl: this.personalLevels.sl,
+      tradeDisabled: livePrice === null,
+      staleReason: livePrice === null ? 'waiting for chart data' : null,
+      onTrade: () => this.handleTradeClick(),
+      onTradeFocusChange: (focused) => this.handleTradeFocusChange(focused),
+    };
   }
 
   /** §3/R-OCO: "the single most dangerous state in the system" — open position(s) with no reachable backend to enforce their SL/TP. */
@@ -694,9 +779,18 @@ export class Bootstrap {
     this.isFrozen = true;
     const snapshot = this.frozenSnapshot ?? this.latestSnapshot;
     this.frozenSnapshot = snapshot;
-    const suggestion = snapshot?.suggestion ?? null;
+    // Personal mode reads the synthetic Suggestion built alongside
+    // personalLevels instead of the snapshot's backend-computed one —
+    // everything downstream of this line (confirm view, slippage guard,
+    // submit) is identical either way.
+    const suggestion =
+      this.tradingMode === 'personal' ? this.personalSuggestion : (snapshot?.suggestion ?? null);
     if (suggestion === null || suggestion.recommendedLtp === null) {
-      widget.showToast('No suggestion available to trade');
+      widget.showToast(
+        this.tradingMode === 'personal'
+          ? 'Waiting for live chart data before trading'
+          : 'No suggestion available to trade',
+      );
       this.isFrozen = false;
       this.frozenSnapshot = null;
       return;
