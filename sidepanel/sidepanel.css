@@ -373,6 +373,30 @@ body {
   margin: 2px 0 0;
 }
 
+.panel__strategy-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel__source-tag {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  flex: none;
+}
+.panel__source-tag--live {
+  background: rgba(76, 175, 122, 0.2);
+  color: #4caf7a;
+}
+.panel__source-tag--mock {
+  background: rgba(255, 255, 255, 0.08);
+  color: #9aa1b8;
+}
+
 .panel__strategy-stat-label {
   font-size: 10px;
   color: #9aa1b8;

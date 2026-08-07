@@ -15,6 +15,7 @@
 import { SidePanelStorageManager } from '../src/core/storage/SidePanelStorageManager';
 import { StorageManager } from '../src/core/storage/StorageManager';
 import { fetchStrategyCatalog } from '../src/core/strategies/strategyCatalog';
+import { strategyBackendClient } from '../src/core/api/strategyBackendClient';
 import { sendToBackground } from '../src/core/messaging/MessageBus';
 import type { StatusResponse } from '../src/core/messaging/messages';
 import type { BrokerConnection, StrategyV2 } from '../src/core/storage/sidePanelSchema';
@@ -23,6 +24,21 @@ import { getLogger } from '../src/utils/logger';
 const log = getLogger('sidepanel');
 const sidePanelStorage = new SidePanelStorageManager();
 const widgetStorage = new StorageManager();
+
+// Populated on init from TradePilotBackend's /strategies/catalog (normalized
+// underscore ids, e.g. "confluence_core"), null until that fetch resolves
+// (attempted) or fails (stays null — every card shows as mock). Never
+// silently presented as real without this check (plan §4's fetch-layer
+// honesty requirement).
+let liveBackendStrategyIds: ReadonlySet<string> | null = null;
+
+function normalizeId(id: string): string {
+  return id.replace(/-/g, '_');
+}
+
+function isLiveBacked(strategyId: string): boolean {
+  return liveBackendStrategyIds?.has(normalizeId(strategyId)) ?? false;
+}
 
 interface BrokerDef {
   readonly id: string;
@@ -198,13 +214,22 @@ function renderStrategyCard(strategy: StrategyV2, applied: boolean): HTMLElement
   avatar.className = 'panel__strategy-avatar';
   avatar.textContent = '⇄';
   const meta = document.createElement('div');
-  const name = document.createElement('div');
+  const nameRow = document.createElement('div');
+  nameRow.className = 'panel__strategy-name-row';
+  const name = document.createElement('span');
   name.className = 'panel__strategy-name';
   name.textContent = strategy.name;
+  nameRow.appendChild(name);
+  const sourceTag = document.createElement('span');
+  sourceTag.className = isLiveBacked(strategy.id)
+    ? 'panel__source-tag panel__source-tag--live'
+    : 'panel__source-tag panel__source-tag--mock';
+  sourceTag.textContent = isLiveBacked(strategy.id) ? 'Live' : 'Mock';
+  nameRow.appendChild(sourceTag);
   const sub = document.createElement('div');
   sub.className = 'panel__strategy-sub';
   sub.textContent = `${strategy.instrument} · Win rate ${strategy.winRatePct}%`;
-  meta.append(name, sub);
+  meta.append(nameRow, sub);
   identity.append(avatar, meta);
 
   const actionButton = document.createElement('button');
@@ -396,6 +421,19 @@ async function init(): Promise<void> {
   renderBrokerList(sidePanelState.brokers);
   renderStrategiesTab(sidePanelState);
   renderSignalsTab(sidePanelState);
+
+  // Try the real backend; on any failure (unreachable, timeout, non-2xx)
+  // liveBackendStrategyIds stays null and every card keeps showing "Mock" —
+  // never silently presented as real (plan §4).
+  void strategyBackendClient.fetchCatalog().then((catalog) => {
+    if (catalog === null) {
+      log.info('strategy backend unreachable — showing mock catalog only');
+      return;
+    }
+    log.info('strategy backend reachable', { count: catalog.length });
+    liveBackendStrategyIds = new Set(catalog.map((entry) => entry.id));
+    renderStrategiesTab(sidePanelState);
+  });
 
   const widgetState = await widgetStorage.load();
   byId<HTMLInputElement>('header-enabled-toggle').checked = widgetState.enabled;
