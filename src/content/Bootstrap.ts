@@ -554,12 +554,31 @@ export class Bootstrap {
   private buildPersonalSuggestionData(mappedSymbol: string | null): WidgetSuggestionData {
     const livePrice = this.bridge?.lastBar()?.close ?? null;
 
+    // Temporary diagnostic (§ personal-mode TP/SL investigation) — logs
+    // every call so a session that goes from working to broken can be
+    // traced via the console instead of guessed at blind. Safe to remove
+    // once the intermittent-null-mappedSymbol / vanishing-pills reports
+    // are root-caused.
+    log.debug('personal mode: applyMarketData tick', {
+      livePrice,
+      mappedSymbol,
+      chartSymbol: this.bridge?.symbol() ?? null,
+      paneRect: this.bridge?.paneRect() ?? null,
+      personalLevelsBefore: this.personalLevels,
+    });
+
     if (this.personalLevels.tp === null && this.personalLevels.sl === null && livePrice !== null) {
       const gap = this.safePersonalLevelGap();
       this.personalLevels = {
         tp: Math.round((livePrice + gap) * 100) / 100,
         sl: Math.round((livePrice - gap) * 100) / 100,
       };
+      log.debug('personal mode: seeded TP/SL', {
+        livePrice,
+        gap,
+        tp: this.personalLevels.tp,
+        sl: this.personalLevels.sl,
+      });
     }
 
     this.personalSuggestion =
@@ -607,20 +626,48 @@ export class Bootstrap {
    */
   private safePersonalLevelGap(): number {
     const bridge = this.bridge;
-    if (bridge === null) return PERSONAL_LEVEL_GAP_POINTS;
+    if (bridge === null) {
+      log.debug('personal mode: gap fallback — no bridge');
+      return PERSONAL_LEVEL_GAP_POINTS;
+    }
     const paneRect = bridge.paneRect();
-    if (paneRect === null) return PERSONAL_LEVEL_GAP_POINTS;
+    if (paneRect === null) {
+      log.debug('personal mode: gap fallback — paneRect() null');
+      return PERSONAL_LEVEL_GAP_POINTS;
+    }
     const topPrice = bridge.yToPrice(paneRect.y);
     const bottomPrice = bridge.yToPrice(paneRect.bottom);
-    if (topPrice === null || bottomPrice === null) return PERSONAL_LEVEL_GAP_POINTS;
+    if (topPrice === null || bottomPrice === null) {
+      log.debug('personal mode: gap fallback — yToPrice() null', {
+        paneRect,
+        topPrice,
+        bottomPrice,
+      });
+      return PERSONAL_LEVEL_GAP_POINTS;
+    }
 
     const visibleRange = Math.abs(topPrice - bottomPrice);
     // Leave headroom so the pill itself (not just the price line) stays
     // clear of the pane edge, and so entry/TP/SL don't crowd on top of
     // each other on a very tight zoom.
     const maxSafeGap = visibleRange * 0.35;
-    if (maxSafeGap <= 0) return PERSONAL_LEVEL_GAP_POINTS;
-    return Math.min(PERSONAL_LEVEL_GAP_POINTS, maxSafeGap);
+    if (maxSafeGap <= 0) {
+      log.debug('personal mode: gap fallback — non-positive visible range', {
+        topPrice,
+        bottomPrice,
+        visibleRange,
+      });
+      return PERSONAL_LEVEL_GAP_POINTS;
+    }
+    const gap = Math.min(PERSONAL_LEVEL_GAP_POINTS, maxSafeGap);
+    log.debug('personal mode: gap computed from visible range', {
+      topPrice,
+      bottomPrice,
+      visibleRange,
+      maxSafeGap,
+      gap,
+    });
+    return gap;
   }
 
   /** §3/R-OCO: "the single most dangerous state in the system" — open position(s) with no reachable backend to enforce their SL/TP. */
