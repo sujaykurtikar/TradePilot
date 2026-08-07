@@ -42,10 +42,15 @@ interface TradePilotManifest {
   web_accessible_resources: Array<{ resources: string[]; matches: string[] }>;
 }
 
-// Our own backend — see IMPLEMENTATION_PLAN.md §10 Q3. Defaults to
-// same-machine FastAPI (127.0.0.1:8000) per the plan's stated assumption;
-// revisit if the API ever runs on a different host.
-const OUR_API_ORIGIN = 'http://127.0.0.1:8000/*';
+// Our own backends — see IMPLEMENTATION_PLAN.md §10 Q3 and
+// IMPLEMENTATION_PLAN_BACKEND_INTEGRATION.md §3. Two separate origins on
+// purpose: 8000 is quantboard-pandapath (order placement / position-risk,
+// still targeted directly there — see background/index.ts); 8100 is the
+// isolated TradePilotBackend (on-chart chart-state/recommend polling plus
+// the Strategies side panel). Both assume same-machine for now; revisit if
+// either API ever runs on a different host.
+const QUANTBOARD_API_ORIGIN = 'http://127.0.0.1:8000/*';
+const TRADEPILOT_BACKEND_ORIGIN = 'http://127.0.0.1:8100/*';
 
 const manifest: TradePilotManifest = {
   manifest_version: 3,
@@ -77,7 +82,8 @@ const manifest: TradePilotManifest = {
     'https://*.tradingview.com/*',
     'https://*.kotaksecurities.com/*',
     'https://trade.kotakneo.com/*',
-    OUR_API_ORIGIN,
+    QUANTBOARD_API_ORIGIN,
+    TRADEPILOT_BACKEND_ORIGIN,
   ],
   background: {
     service_worker: 'background.js',

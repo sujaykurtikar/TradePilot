@@ -43,7 +43,7 @@ describe('ApiClient', () => {
     const result = await client.fetchChartState(new AbortController().signal);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8000/v1/paper/chart/state',
+      'http://127.0.0.1:8000/chart/state',
       expect.objectContaining({ signal: expect.anything() }),
     );
     expect(result.ok).toBe(true);
@@ -57,10 +57,7 @@ describe('ApiClient', () => {
     const client = new ApiClient({ baseUrl: 'http://127.0.0.1:8000' });
     const result = await client.fetchRecommend(new AbortController().signal);
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8000/v1/paper/recommend',
-      expect.anything(),
-    );
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:8000/recommend', expect.anything());
     expect(result.ok).toBe(true);
   });
 
@@ -69,10 +66,7 @@ describe('ApiClient', () => {
     vi.stubGlobal('fetch', fetchMock);
     const client = new ApiClient({ baseUrl: 'http://127.0.0.1:8000/' });
     await client.fetchChartState(new AbortController().signal);
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:8000/v1/paper/chart/state',
-      expect.anything(),
-    );
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:8000/chart/state', expect.anything());
   });
 
   it('rejects a well-formed JSON body that fails shape validation (§7.1 guard, not a cast)', async () => {

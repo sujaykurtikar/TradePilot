@@ -27,10 +27,20 @@ const tabRegistry = new TabRegistry();
 // machine as the browser." Kept as a constant rather than a popup
 // setting for now — making this configurable is real, deferred scope,
 // not an oversight; flagging it rather than silently hardcoding it.
-const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000';
-const apiClient = new ApiClient({ baseUrl: DEFAULT_API_BASE_URL });
-const orderService = new OrderService(DEFAULT_API_BASE_URL);
-const positionRiskService = new PositionRiskService(DEFAULT_API_BASE_URL);
+//
+// Two different backends, on purpose (IMPLEMENTATION_PLAN_BACKEND_INTEGRATION.md
+// §3): the on-chart widget's read-only chart-state/recommend polling now
+// targets TradePilotBackend (isolated, own mock data + ported strategies —
+// zero runtime dependency on quantboard-pandapath). Order placement and
+// position-risk-drag still target quantboard-pandapath directly, since it
+// owns the only real paper-trading position/PnL engine that exists today —
+// migrating those requires building that engine inside TradePilotBackend
+// first, which hasn't been done.
+const QUANTBOARD_API_BASE_URL = 'http://127.0.0.1:8000';
+const STRATEGY_API_BASE_URL = 'http://127.0.0.1:8100';
+const apiClient = new ApiClient({ baseUrl: STRATEGY_API_BASE_URL });
+const orderService = new OrderService(QUANTBOARD_API_BASE_URL);
+const positionRiskService = new PositionRiskService(QUANTBOARD_API_BASE_URL);
 
 const CONTENT_LIFECYCLE_PORT_NAME = 'tradepilot-content-lifecycle';
 

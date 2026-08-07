@@ -53,10 +53,10 @@ export class ApiClient {
   }
 
   fetchChartState(signal: AbortSignal): Promise<Result<RawChartState, string>> {
-    return fetchGuarded(`${this.baseUrl}/v1/paper/chart/state`, isRawChartState, signal);
+    return fetchGuarded(`${this.baseUrl}/chart/state`, isRawChartState, signal);
   }
 
   fetchRecommend(signal: AbortSignal): Promise<Result<RawRecommend, string>> {
-    return fetchGuarded(`${this.baseUrl}/v1/paper/recommend`, isRawRecommend, signal);
+    return fetchGuarded(`${this.baseUrl}/recommend`, isRawRecommend, signal);
   }
 }
