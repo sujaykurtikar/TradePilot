@@ -70,7 +70,7 @@ export function createSuggestionCard(initial: SuggestionCardProps): SuggestionCa
   handle.textContent = '⇄';
   handle.setAttribute('aria-hidden', 'true');
 
-  // ---- normal view ----
+  // ---- normal (strategy-mode) view ----
   const body = document.createElement('div');
   body.className = 'tp-card__body';
 
@@ -175,12 +175,14 @@ export function createSuggestionCard(initial: SuggestionCardProps): SuggestionCa
     body.style.display = '';
     confirmView.style.display = 'none';
 
-    title.textContent = props.hasPosition ? 'Position' : 'Suggested';
     root.setAttribute('aria-label', props.hasPosition ? 'Open position' : 'Suggested trade');
 
+    title.textContent = props.hasPosition ? 'Position' : 'Suggested';
     symbol.textContent = props.symbolLabel;
-    sub.textContent = props.subLabel ?? '';
-    sub.style.display = props.subLabel ? '' : 'none';
+    // Kept out of the compact card on purpose — it stays just icon /
+    // "Suggested" / strike / Trade button, with no extra LTP line eating
+    // chart space (§ user request).
+    sub.style.display = 'none';
 
     if (props.staleReason) {
       tradeBtn.textContent = props.staleReason;

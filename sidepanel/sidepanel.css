@@ -90,6 +90,17 @@ body {
   flex: none;
 }
 
+.panel__header-toggle-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  cursor: pointer;
+}
+.panel__header-toggle-group[hidden] {
+  display: none;
+}
+
 .panel__header-toggle {
   position: relative;
   display: inline-flex;
@@ -154,6 +165,18 @@ body {
 }
 .panel__info-tooltip[hidden] {
   display: none;
+}
+
+.panel__settings-menu {
+  display: flex;
+  justify-content: flex-end;
+  margin: -8px 0 0;
+}
+.panel__settings-menu[hidden] {
+  display: none;
+}
+.panel__settings-menu-button {
+  width: auto;
 }
 
 .panel__tabs {

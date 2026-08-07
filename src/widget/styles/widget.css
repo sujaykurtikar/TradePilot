@@ -144,9 +144,9 @@
 .tp-card {
   display: flex;
   align-items: center;
-  gap: var(--tp-space-2);
-  padding: var(--tp-space-2) var(--tp-space-3);
-  padding-left: 20px; /* extra room for the arrow notch */
+  gap: var(--tp-space-1);
+  padding: var(--tp-space-1) var(--tp-space-2);
+  padding-left: 16px; /* extra room for the arrow notch */
   border-radius: var(--tp-radius-lg);
   background: var(--tp-color-bg);
   backdrop-filter: var(--tp-blur);
@@ -154,7 +154,7 @@
   border: 1px solid color-mix(in srgb, var(--tp-color-accent) 60%, var(--tp-color-border));
   box-shadow: var(--tp-shadow-card);
   pointer-events: auto;
-  min-width: 168px;
+  min-width: 128px;
   /* Centred on the connector line both ways, so the line runs through the
      card's middle instead of hugging its right edge. */
   translate: -50% -50%;
@@ -183,7 +183,7 @@
   align-items: center;
   flex: 1;
   min-width: 0;
-  gap: var(--tp-space-2);
+  gap: var(--tp-space-1);
 }
 
 .tp-card__icon {
@@ -191,12 +191,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   background: var(--tp-color-accent);
   color: #1a1308;
-  font-size: 15px;
+  font-size: 11px;
   line-height: 1;
   cursor: grab;
   touch-action: none;
@@ -215,21 +215,21 @@
 }
 
 .tp-card__title {
-  font-size: var(--tp-font-size-sm);
+  font-size: 9px;
   font-weight: 700;
   color: var(--tp-color-text-dim);
   letter-spacing: 0.03em;
 }
 
 .tp-card__symbol {
-  font-size: var(--tp-font-size-lg);
+  font-size: var(--tp-font-size-md);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .tp-card__symbol-sub {
-  font-size: var(--tp-font-size-sm);
+  font-size: 10px;
   color: var(--tp-color-text-dim);
   font-variant-numeric: tabular-nums;
 }
@@ -238,10 +238,10 @@
   appearance: none;
   border: none;
   border-radius: var(--tp-radius-sm);
-  padding: var(--tp-space-2) var(--tp-space-3);
+  padding: var(--tp-space-1) var(--tp-space-2);
   background: #fff;
   color: #14161c;
-  font-size: var(--tp-font-size-md);
+  font-size: var(--tp-font-size-sm);
   font-weight: 700;
   cursor: pointer;
   flex: none;
@@ -434,4 +434,283 @@
 }
 .tp-connector-line--sl {
   background: color-mix(in srgb, var(--tp-color-sl) 65%, transparent);
+}
+
+/* ---------- Full-width TP/SL/entry price lines (TradingView order-line style) ---------- */
+
+.tp-hline {
+  height: 1px;
+  pointer-events: none;
+  /* Centred vertically on the price it marks, same convention as the pills. */
+  translate: 0 -50%;
+}
+.tp-hline--tp {
+  background: color-mix(in srgb, var(--tp-color-tp) 70%, transparent);
+}
+.tp-hline--sl {
+  background: color-mix(in srgb, var(--tp-color-sl) 70%, transparent);
+}
+.tp-hline--entry {
+  background: color-mix(in srgb, var(--tp-color-accent) 75%, transparent);
+}
+
+/* ---------- Standalone personal-mode order panel (§ reference screenshot) ----------
+   Proportions follow the Zing Trade extension's own margin-trade widget
+   (`lemonn-margin-trade-widget`), which builds the same panel with inline
+   styles from a JS token map: tinted header strip over a body of three
+   equal columns, each an 8px-radius control with a caption underneath.
+
+   The absolute sizes are tightened from the reference's (§ user request to
+   take up less chart): 92×26 controls rather than 104×32, ~6px padding
+   rather than 10-16px, 300px min width rather than 360px. Type sizes are
+   NOT scaled down with them — 12px symbol, 11px button labels and 9px
+   captions are the floor for a panel that places live orders, so the
+   compression comes out of whitespace and control size only.
+
+   Colours stay on tokens.css so the panel still themes with the rest of
+   the widget; only the few values with no token equivalent (the honey
+   header/pill shades, the stepper's mid-grey border) are literal, and
+   those are the reference's own dark-mode values. */
+
+.tp-order-panel {
+  /* Reference dark-mode shades with no token equivalent (honey800/honey900/
+     honey400 and charcoal600 in its palette). */
+  --tp-op-header-bg: #6b4100;
+  --tp-op-pill-bg: #392300;
+  --tp-op-border-top: #d79900;
+  --tp-op-stepper-border: #525252;
+
+  display: flex;
+  flex-direction: column;
+  min-width: 300px;
+  max-width: 100%;
+  border-radius: 10px;
+  /* Gradient hairline border, honey at the top fading to neutral — the
+     padding-box/border-box trick the reference uses, since a plain
+     border-color can't hold a gradient. */
+  background:
+    linear-gradient(var(--tp-color-bg-solid), var(--tp-color-bg-solid)) padding-box,
+    linear-gradient(180deg, var(--tp-op-border-top) 0%, rgba(255, 255, 255, 0.14) 100%) border-box;
+  border: 1px solid transparent;
+  box-shadow: 0 -4px 16px rgba(107, 65, 0, 0.4);
+  overflow: hidden;
+  pointer-events: auto;
+  /* Anchored by its top-left corner, unlike the centre-anchored pills/card
+     — applyOrderPanel positions it directly, no translate compensation. */
+}
+
+.tp-order-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--tp-op-header-bg);
+}
+
+.tp-order-panel__body {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px;
+}
+
+.tp-order-panel__col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.tp-order-panel__sublabel {
+  max-width: 100%;
+  text-align: center;
+  font-size: 9px;
+  line-height: 11px;
+  font-weight: 600;
+  color: var(--tp-color-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tp-order-panel__icon {
+  flex: 0 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--tp-color-accent);
+  color: #1a1308;
+  font-size: 9px;
+  line-height: 1;
+  user-select: none;
+}
+
+.tp-order-panel__symbol {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tp-order-panel__type-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--tp-op-pill-bg);
+  border: 1px solid transparent;
+}
+
+.tp-order-panel__type-tab {
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 12px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+}
+.tp-order-panel__type-tab--active {
+  background: #fff;
+  color: #000;
+}
+.tp-order-panel__type-tab--disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tp-order-panel__handle {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--tp-color-text);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.tp-order-panel__handle:active {
+  cursor: grabbing;
+}
+
+.tp-order-panel__qty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  width: 92px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--tp-op-stepper-border);
+  border-radius: 8px;
+  background: transparent;
+}
+
+.tp-order-panel__qty-btn {
+  appearance: none;
+  border: none;
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--tp-color-text);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.tp-order-panel__qty-btn:hover:not(:disabled) {
+  color: var(--tp-color-accent);
+}
+.tp-order-panel__qty-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tp-order-panel__qty-numbers {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Line heights here are tighter than elsewhere in the panel because both
+   spans have to fit inside the stepper's 26px box when a lot size is known
+   and the "N Lots" caption sits under the contract count. */
+.tp-order-panel__qty-num {
+  font-size: 11px;
+  line-height: 13px;
+  font-weight: 700;
+  color: var(--tp-color-text);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.tp-order-panel__qty-lot {
+  font-size: 9px;
+  line-height: 10px;
+  font-weight: 600;
+  color: var(--tp-color-text-dim);
+  white-space: nowrap;
+}
+/* Nothing to reserve space for when the lot count is the primary number
+   (lotSize unknown) — otherwise the empty span pushes the stepper taller
+   than its 26px box. */
+.tp-order-panel__qty-lot:empty {
+  display: none;
+}
+
+.tp-order-panel__btn {
+  appearance: none;
+  flex: 0 0 auto;
+  width: 92px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+/* Outlined on a transparent fill, like the reference. Its label sits a shade
+   lighter than the border so it still reads once the 18% background fill
+   these buttons used to have is gone. */
+.tp-order-panel__btn--buy {
+  border: 1px solid var(--tp-color-tp);
+  color: color-mix(in srgb, var(--tp-color-tp) 80%, #ffffff);
+}
+.tp-order-panel__btn--sell {
+  border: 1px solid var(--tp-color-sl);
+  color: color-mix(in srgb, var(--tp-color-sl) 80%, #ffffff);
+}
+.tp-order-panel__btn--buy:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tp-color-tp) 8%, transparent);
+}
+.tp-order-panel__btn--sell:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tp-color-sl) 8%, transparent);
+}
+.tp-order-panel__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

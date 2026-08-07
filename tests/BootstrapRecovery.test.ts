@@ -14,9 +14,12 @@ import type { Bootstrap as BootstrapClass } from '../src/content/Bootstrap';
 
 const probeTicks: ((state: DegradationState) => void)[] = [];
 const destroySpy = vi.fn();
+const setModeSpy = vi.fn();
+const updateSuggestionSpy = vi.fn();
 let mountedCount = 0;
 let chartReady = true;
 let initialProbe: DegradationState;
+let storedTradingMode: 'strategy' | 'personal' = 'strategy';
 
 vi.mock('../src/bridge/BridgeClient', () => ({
   createBridgeClient: () => ({
@@ -57,13 +60,18 @@ vi.mock('../src/widget/WidgetRoot', () => ({
     destroy(): void {
       destroySpy();
     }
-    setMode(): void {}
+    setMode(mode: string, reason: string): void {
+      setModeSpy(mode, reason);
+    }
     setPosition(): void {}
     setHidden(): void {}
     setDataStale(): void {}
     setCollapsedExternal(): void {}
     setUnprotectedWarning(): void {}
-    updateSuggestion(): void {}
+    updateSuggestion(data: unknown): void {
+      updateSuggestionSpy(data);
+    }
+    setTradingMode(): void {}
     showToast(): void {}
     resetOffsets(): void {}
     setTradeConfirm(): void {}
@@ -78,6 +86,7 @@ vi.mock('../src/core/storage/StorageManager', () => ({
         widgetCollapsed: false,
         widgetOffsets: {},
         widgetHiddenReason: null,
+        tradingMode: storedTradingMode,
       });
     }
     patch(): Promise<void> {
@@ -99,6 +108,11 @@ const anchored: DegradationState = {
   result: null,
   reason: 'all capability checks passed',
 };
+const manual: DegradationState = {
+  mode: 'manual',
+  result: null,
+  reason: 'chart bridge resolved but coordinate math failed: priceToY(lastClose)=null outside pane rect',
+};
 
 const chromeStub = {
   runtime: {
@@ -115,8 +129,11 @@ describe('Bootstrap — the widget recovers instead of needing a page reload', (
     vi.useFakeTimers();
     probeTicks.length = 0;
     destroySpy.mockClear();
+    setModeSpy.mockClear();
+    updateSuggestionSpy.mockClear();
     mountedCount = 0;
     chartReady = true;
+    storedTradingMode = 'strategy';
     initialProbe = anchored;
     Object.assign(globalThis, { chrome: chromeStub });
     Object.defineProperty(document, 'visibilityState', {
@@ -156,6 +173,66 @@ describe('Bootstrap — the widget recovers instead of needing a page reload', (
     probeTicks[0]?.(unavailable);
     probeTicks[0]?.(unavailable);
     expect(destroySpy).not.toHaveBeenCalled();
+  });
+
+  it('a single degraded (manual-mode) probe does NOT flip the widget into manual — a zoom mid-tick is ridden out too', async () => {
+    boot = new Bootstrap();
+    void boot.start();
+    await settle();
+    const tick = probeTicks[0];
+
+    // Zoom/scale operations can leave TradingView's own coordinate APIs
+    // mid-transition for a probe tick — the widget must not visibly
+    // switch layouts (pills snapping to the fixed manual stack, connector
+    // line stranded) off one blip.
+    tick?.(manual);
+    expect(setModeSpy).not.toHaveBeenCalled();
+
+    // And recovering clears the streak — it never carries over to a LATER, unrelated blip.
+    tick?.(anchored);
+    expect(setModeSpy).toHaveBeenLastCalledWith('anchored', anchored.reason);
+    tick?.(manual);
+    expect(setModeSpy).not.toHaveBeenCalledWith('manual', expect.anything());
+  });
+
+  it('a SUSTAINED coordinate-math failure across two consecutive probes does commit to manual mode', async () => {
+    boot = new Bootstrap();
+    void boot.start();
+    await settle();
+    const tick = probeTicks[0];
+
+    tick?.(manual);
+    expect(setModeSpy).not.toHaveBeenCalled();
+    tick?.(manual);
+    expect(setModeSpy).toHaveBeenCalledWith('manual', manual.reason);
+  });
+
+  it('personal mode shows its TP/SL from the chart alone, without waiting for a market-data push', async () => {
+    // The backend may be down, or the next push up to 30s away. Personal
+    // levels are seeded from the chart's live price and owned by the user,
+    // so neither has any bearing on them — but personal mode used to render
+    // only from applyMarketData, so with no snapshot the pills stayed empty
+    // and the toggle looked like it did nothing.
+    storedTradingMode = 'personal';
+    boot = new Bootstrap();
+    void boot.start();
+    await settle();
+
+    expect(updateSuggestionSpy).toHaveBeenCalled();
+    const data = updateSuggestionSpy.mock.calls.at(-1)?.[0] as { tp: number; sl: number };
+    // Seeded ±0.15% around the stub bridge's last close of 100.
+    expect(data.tp).toBeGreaterThan(100);
+    expect(data.sl).toBeLessThan(100);
+  });
+
+  it('strategy mode does NOT render a suggestion before its first market-data push', async () => {
+    boot = new Bootstrap();
+    void boot.start();
+    await settle();
+
+    // Strategy levels come from the backend; there is nothing honest to
+    // show until one arrives.
+    expect(updateSuggestionSpy).not.toHaveBeenCalled();
   });
 
   it('a sustained outage tears down, then remounts on its own once the chart returns', async () => {

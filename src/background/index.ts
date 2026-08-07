@@ -25,6 +25,14 @@ const storage = new StorageManager();
 const sidePanelStorage = new SidePanelStorageManager();
 const tabRegistry = new TabRegistry();
 
+// No default_popup in the manifest — clicking the toolbar icon opens the
+// side panel directly instead of a separate popup window.
+chrome.action.onClicked.addListener((tab) => {
+  if (tab.windowId !== undefined) {
+    void chrome.sidePanel.open({ windowId: tab.windowId });
+  }
+});
+
 /** Mirrors sidepanel.ts's own normalizeId() — the extension's mock strategy ids use hyphens, TradePilotBackend's are underscore_cased. */
 function normalizeStrategyId(id: string | null): string | null {
   return id === null ? null : id.replace(/-/g, '_');

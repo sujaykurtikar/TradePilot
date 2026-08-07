@@ -15,9 +15,10 @@ import type { InternalApiHostConfig } from '../bridge/adapters/hostConfigs';
 import { CapabilityProbe, type DegradationState } from '../bridge/CapabilityProbe';
 import { WidgetRoot, type WidgetSuggestionData } from '../widget/WidgetRoot';
 import type { Offset } from '../widget/managers/DragManager';
-import { buildDemoSuggestionConfig, DEMO_FALLBACK_SPOT } from './demoSuggestion';
+import { atmStrikeFromSpot, buildDemoSuggestionConfig, DEMO_FALLBACK_SPOT } from './demoSuggestion';
 import { waitForChartReady } from './ChartReadyDetector';
 import { SpaNavigationObserver } from './SpaNavigationObserver';
+import { resolveChartSymbol } from './symbolResolution';
 import { markInjected, shouldInject, clearInjectedFlag } from './InjectionGuard';
 import { StorageManager } from '../core/storage/StorageManager';
 import type { StorageSchema } from '../core/storage/schema';
@@ -33,7 +34,6 @@ import type { MarketDataSnapshot } from '../core/api/types';
 import type { Suggestion } from '../models/Suggestion';
 import type { TradingMode } from '../models/TradingMode';
 import type { DraggablePosition, Position, RiskLevelReconciliationState } from '../models/Position';
-import type { TradeConfirmDetails } from '../widget/components/SuggestionCard';
 import { getLogger } from '../utils/logger';
 
 const log = getLogger('content:bootstrap');
@@ -43,6 +43,18 @@ const LAST_BAR_POLL_MS = 250;
 const OFFSET_PERSIST_DEBOUNCE_MS = 400;
 /** A single failed probe is often just a chart redraw/pan/zoom mid-tick — only a sustained outage should tear the widget down. */
 const UNAVAILABLE_PROBES_BEFORE_TEARDOWN = 3;
+/**
+ * Same "a single failed probe is often just a chart redraw/pan/zoom
+ * mid-tick" reasoning as UNAVAILABLE_PROBES_BEFORE_TEARDOWN, applied to
+ * the manual-mode transition too — a zoom/scale operation can leave
+ * TradingView's own coordinate APIs (priceToY/yToPrice/timeToX) mid-
+ * transition for a moment (the probe uses the SAME calls the widget's
+ * own positioning does), which used to flip the whole widget into
+ * manual mode's fixed layout from one bad probe. Small on purpose: 2
+ * means "confirmed on the very next tick", not tolerating a real
+ * degradation for long.
+ */
+const MANUAL_PROBES_BEFORE_DEGRADING = 2;
 /** Retry interval for the automatic remount loop once the widget is missing (torn down, or an earlier mount attempt failed). */
 const REMOUNT_RETRY_MS = 5000;
 /** §R-P5: "last success > 15s ago" -> stale. Matches DataPoller's own base poll interval (5s) with real margin. */
@@ -117,6 +129,7 @@ export class Bootstrap {
   private disposed = false;
   private runToken = 0;
   private consecutiveUnavailableProbes = 0;
+  private consecutiveManualProbes = 0;
   private remountTimer: ReturnType<typeof setTimeout> | null = null;
   private mountInFlight = false;
 
@@ -131,6 +144,15 @@ export class Bootstrap {
 
   private hostConfig: InternalApiHostConfig | null = null;
   private latestSnapshot: MarketDataSnapshot | null = null;
+  /**
+   * Last symbol the chart actually reported, mapped to our instrument
+   * name — covers bridge.symbol() transiently returning null (see
+   * applyMarketData). Deliberately invalidated rather than aged out: a
+   * real symbol change (bridge.onChange), an unmapped symbol, and
+   * teardown/navigation all clear it, so it can never outlive the symbol
+   * it describes.
+   */
+  private lastKnownMappedSymbol: string | null = null;
 
   // Personal trading mode (side-panel toggle only — no on-chart UI for
   // it). Chart stays idle: no strategy signal is used at all. A default
@@ -140,6 +162,10 @@ export class Bootstrap {
   // is deliberately no on-chart picker.
   private tradingMode: TradingMode = 'strategy';
   private personalLevels: { tp: number | null; sl: number | null } = { tp: null, sl: null };
+  /** BUY (CE) vs SELL (PE) — the user's own call in personal mode, set by which order-entry button is pressed OR implied by a dragged TP/SL layout (syncPersonalDirectionToLevels); see buildPersonalSuggestionData. */
+  private personalDirection: 'BUY' | 'SELL' = 'BUY';
+  /** Lot count for personal mode's order-entry stepper. */
+  private personalLots = 1;
   /** Synthetic Suggestion built alongside personalLevels — lets handleTradeClick/handleConfirmClick reuse the existing confirm/submit pipeline unchanged. */
   private personalSuggestion: Suggestion | null = null;
 
@@ -152,7 +178,8 @@ export class Bootstrap {
   // §P6 trade-confirm state.
   private isFrozen = false;
   private frozenSnapshot: MarketDataSnapshot | null = null;
-  private confirmShowing = false;
+  /** §R-P6 double-submit guard — replaces the removed confirm view's disable-on-submit. */
+  private submitInFlight = false;
   private activeConfirmContext: ActiveConfirmContext | null = null;
   private readonly onVisibilityChange = (): void => {
     reportTabVisibility();
@@ -228,8 +255,11 @@ export class Bootstrap {
     if (next.tradingMode !== this.tradingMode) {
       this.tradingMode = next.tradingMode;
       this.personalLevels = { tp: null, sl: null };
+      this.personalDirection = 'BUY';
+      this.personalLots = 1;
       this.widget.setTradingMode(next.tradingMode);
       if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+      else this.renderPersonalSuggestion();
     }
   }
 
@@ -359,14 +389,26 @@ export class Bootstrap {
       onPositionRiskDrag: (variant, newPrice) => this.handlePositionRiskDrag(variant, newPrice),
       onManualLevelDragEnd: (variant, newPrice) => {
         this.personalLevels = { ...this.personalLevels, [variant]: newPrice };
+        this.syncPersonalDirectionToLevels();
+        // Must be synchronous either way — WidgetRoot zeroes the pill's
+        // drag offset straight after this returns, so the new price has to
+        // already be rendered or the pill snaps back for a frame.
         if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+        else this.renderPersonalSuggestion();
       },
       suggestion: {
         symbolLabel: suggestionConfig.strikeLabel,
         subLabel: `Entry ${suggestionConfig.entry}`,
         livePrice: () => bridge.lastBar()?.close ?? null,
-        tp: suggestionConfig.tp,
-        sl: suggestionConfig.sl,
+        // No TP/SL until something real supplies them — a strategy push, or
+        // the user's own levels in personal mode. The Day-1 demo offsets
+        // (spot ±6/±4) sat a few points either side of the entry, so on any
+        // normal zoom the two pills landed on top of each other and on the
+        // card for the couple of seconds before the first push replaced
+        // them, which read as the widget rendering itself broken. An empty
+        // card until the levels are known is both tidier and more honest.
+        tp: null,
+        sl: null,
         tradeDisabled: false,
         staleReason: null,
         // §P6 supersedes the Day-1 toast-only stub the moment the widget
@@ -397,7 +439,13 @@ export class Bootstrap {
     // away rather than continuing to show the old symbol's numbers.
     this.unsubscribeBridgeChange = bridge.onChange((reason) => {
       if (reason !== 'symbol' && reason !== 'interval') return;
+      // The instrument itself changed — the remembered mapping describes
+      // the OLD one and must not be reused as a fallback for it, or a
+      // transiently-null symbol() could label (and trade) the new chart
+      // as the previous instrument.
+      if (reason === 'symbol') this.lastKnownMappedSymbol = null;
       if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
+      else this.renderPersonalSuggestion();
     });
 
     // §P5: a data push may already have arrived while we were waiting on
@@ -406,6 +454,11 @@ export class Bootstrap {
     // few extra seconds until the next scheduled push.
     if (this.latestSnapshot !== null) {
       this.applyMarketData(this.latestSnapshot);
+    } else {
+      // Personal mode has everything it needs already (see
+      // renderPersonalSuggestion) — it must not sit on the empty
+      // placeholder card waiting for a push it doesn't use.
+      this.renderPersonalSuggestion();
     }
   }
 
@@ -436,6 +489,20 @@ export class Bootstrap {
     }
 
     this.consecutiveUnavailableProbes = 0;
+
+    if (state.mode === 'manual') {
+      this.consecutiveManualProbes += 1;
+      if (this.consecutiveManualProbes < MANUAL_PROBES_BEFORE_DEGRADING) {
+        log.warn('capability probe reported degraded coordinate math — riding out a transient blip', {
+          reason: state.reason,
+          streak: this.consecutiveManualProbes,
+        });
+        return; // stay on whatever mode the widget is already in
+      }
+    } else {
+      this.consecutiveManualProbes = 0;
+    }
+
     this.widget.setMode(state.mode, state.reason);
   }
 
@@ -470,18 +537,29 @@ export class Bootstrap {
     widget.setPosition(this.buildDraggablePosition(snapshot.positions[0] ?? null));
 
     // §R-P5 "unmapped symbol hides the widget rather than guessing."
-    const chartSymbol = bridge.symbol();
-    const mappedSymbol = chartSymbol !== null ? (hostConfig.symbolMap[chartSymbol] ?? null) : null;
-    if (chartSymbol !== null && mappedSymbol === null) {
-      log.warn('chart symbol has no entry in the symbol map — hiding widget', { chartSymbol });
+    // See symbolResolution.ts for why a null bridge.symbol() must not be
+    // treated as "unknown instrument" here.
+    const resolution = resolveChartSymbol(
+      bridge.symbol(),
+      hostConfig.symbolMap,
+      this.lastKnownMappedSymbol,
+    );
+    if (resolution.kind === 'unmapped') {
+      log.warn('chart symbol has no entry in the symbol map — hiding widget', {
+        chartSymbol: resolution.chartSymbol,
+      });
       widget.setHidden(true);
+      this.lastKnownMappedSymbol = null;
       // §7.7: "widget hidden with a reason in the popup" — this is the
       // one place that reason gets written; popup.ts reads it back.
-      this.setWidgetHiddenReason(`Symbol "${chartSymbol}" is not in the symbol map.`);
+      this.setWidgetHiddenReason(`Symbol "${resolution.chartSymbol}" is not in the symbol map.`);
       return;
     }
     widget.setHidden(false);
     this.setWidgetHiddenReason(null);
+
+    const effectiveSymbol = resolution.symbol;
+    if (resolution.remember) this.lastKnownMappedSymbol = resolution.symbol;
 
     // §P6: "levels must not shift between the decision and the click" —
     // while the user is hovering Trade or has a confirm open, the
@@ -498,7 +576,7 @@ export class Bootstrap {
     // Personal mode never looks at snapshot.suggestion — the chart stays
     // idle (no strategy signal), driven entirely by personalLevels.
     if (this.tradingMode === 'personal') {
-      widget.updateSuggestion(this.buildPersonalSuggestionData(mappedSymbol));
+      widget.updateSuggestion(this.buildPersonalSuggestionData(effectiveSymbol));
       return;
     }
 
@@ -515,7 +593,7 @@ export class Bootstrap {
     const symbolLabel =
       hasEntry && suggestion !== null
         ? `${suggestion.recommendedSymbol}${optionSuffix}`
-        : (mappedSymbol ?? 'TradePilot');
+        : (effectiveSymbol ?? 'TradePilot');
 
     const suggestionData: WidgetSuggestionData = {
       symbolLabel,
@@ -534,30 +612,82 @@ export class Bootstrap {
   }
 
   /**
+   * Renders personal mode from the chart alone, with no market-data
+   * snapshot involved.
+   *
+   * Personal mode needs nothing from the backend — its levels are seeded
+   * from the chart's own live price and then owned by the user. Driving it
+   * only from applyMarketData meant the pills waited on a data push that
+   * could be up to 30s away, and never came at all with the backend down,
+   * so turning personal mode on appeared to do nothing. (It was previously
+   * masked by the Day-1 demo levels, which happened to occupy the pills
+   * until the first push landed.)
+   */
+  private renderPersonalSuggestion(): void {
+    const widget = this.widget;
+    const bridge = this.bridge;
+    const hostConfig = this.hostConfig;
+    if (widget === null || bridge === null || hostConfig === null) return;
+    if (this.tradingMode !== 'personal' || this.isFrozen) return;
+
+    const resolution = resolveChartSymbol(
+      bridge.symbol(),
+      hostConfig.symbolMap,
+      this.lastKnownMappedSymbol,
+    );
+    // An unmapped symbol hides the widget, but that decision belongs to
+    // applyMarketData (which also owns the reason string shown in the
+    // popup) — here it just means there is nothing to render.
+    if (resolution.kind === 'unmapped') return;
+    if (resolution.remember) this.lastKnownMappedSymbol = resolution.symbol;
+
+    widget.updateSuggestion(this.buildPersonalSuggestionData(resolution.symbol));
+  }
+
+  /**
    * Personal mode: idle, no strategy signal, no on-chart picker. Direction
-   * (BUY) and option type (CE) are fixed — the only per-product decision
-   * this mode makes for the user. TP/SL are seeded once from live price
-   * (±0.15%) so something is shown immediately, then held fixed until the
-   * user drags a pill (WidgetRoot's onManualLevelDragEnd) — a later price
-   * tick must not silently re-anchor a level the user may have already
-   * adjusted or is about to.
+   * starts at BUY (CE) and is the user's own call from there — set either
+   * by which order-entry button they press (handlePersonalOrderClick) or
+   * implied by the TP/SL layout they drag (syncPersonalDirectionToLevels).
+   * TP/SL are seeded once from live price (±0.15%) so something is shown
+   * immediately, then held fixed until the user drags a pill (WidgetRoot's
+   * onManualLevelDragEnd) — a later price tick must not silently re-anchor
+   * a level the user may have already adjusted or is about to.
    */
   private buildPersonalSuggestionData(mappedSymbol: string | null): WidgetSuggestionData {
     const livePrice = this.bridge?.lastBar()?.close ?? null;
+    const optionType = this.personalDirection === 'BUY' ? 'CE' : 'PE';
+    const lotSize = this.latestSnapshot?.chartContext?.lotSize ?? null;
+
+    // Buy/Sell → Exit (§ user reference): when a position is already open,
+    // the button that would close it relabels — matching Zing's UI, though
+    // NOT its click behaviour, since there is no wired call to actually
+    // close a position yet (see OrderPanel.ts's header comment). Both
+    // buttons are disabled rather than left half-functional: the
+    // Exit-labelled one because there's nothing to submit it to, and the
+    // other because clicking it while a position is open would today just
+    // fire a second, unrelated entry order — a real gap this closes rather
+    // than papering over.
+    const openPosition = this.latestSnapshot?.positions[0] ?? null;
+    const orderEntryState = this.buildOrderEntryButtonState(openPosition);
+    // Buying a call profits above entry (TP above, SL below); buying a put
+    // profits below entry, so that relationship flips — never "SELL" as in
+    // shorting the underlying, just which option side is being bought.
+    const tpSign = this.personalDirection === 'BUY' ? 1 : -1;
 
     if (this.personalLevels.tp === null && this.personalLevels.sl === null && livePrice !== null) {
       this.personalLevels = {
-        tp: Math.round(livePrice * 1.0015 * 100) / 100,
-        sl: Math.round(livePrice * 0.9985 * 100) / 100,
+        tp: Math.round(livePrice * (1 + tpSign * 0.0015) * 100) / 100,
+        sl: Math.round(livePrice * (1 - tpSign * 0.0015) * 100) / 100,
       };
     }
 
     this.personalSuggestion =
       livePrice !== null && mappedSymbol !== null
         ? {
-            direction: 'BUY',
+            direction: this.personalDirection,
             recommendedSymbol: mappedSymbol,
-            recommendedOptionType: 'CE',
+            recommendedOptionType: optionType,
             recommendedLtp: livePrice,
             sl: this.personalLevels.sl,
             tp: this.personalLevels.tp,
@@ -569,7 +699,12 @@ export class Bootstrap {
         : null;
 
     return {
-      symbolLabel: mappedSymbol !== null ? `${mappedSymbol} CE` : 'TradePilot',
+      // Like Zing Trade's own reference card: the strike/option-type pair
+      // implied by the live spot price (ATM, rounded to the nearest strike
+      // interval) and the user's chosen direction, not the underlying's own
+      // name — "NIFTY CE" tells the user nothing about which contract this
+      // actually is.
+      symbolLabel: livePrice !== null ? `${atmStrikeFromSpot(livePrice)} ${optionType}` : '—',
       subLabel: livePrice !== null ? `LTP ${livePrice}` : null,
       livePrice: () => this.bridge?.lastBar()?.close ?? null,
       tp: this.personalLevels.tp,
@@ -578,7 +713,122 @@ export class Bootstrap {
       staleReason: livePrice === null ? 'waiting for chart data' : null,
       onTrade: () => this.handleTradeClick(),
       onTradeFocusChange: (focused) => this.handleTradeFocusChange(focused),
+      orderEntry: {
+        lots: this.personalLots,
+        lotSize,
+        canDecrementLots: this.personalLots > 1,
+        onIncrementLots: () => this.adjustPersonalLots(1),
+        onDecrementLots: () => this.adjustPersonalLots(-1),
+        onBuy: () => this.handlePersonalOrderClick('BUY'),
+        onSell: () => this.handlePersonalOrderClick('SELL'),
+        disabled: livePrice === null,
+        buyLabel: orderEntryState.buyLabel,
+        sellLabel: orderEntryState.sellLabel,
+        buyDisabledReason: orderEntryState.buyDisabledReason,
+        sellDisabledReason: orderEntryState.sellDisabledReason,
+      },
     };
+  }
+
+  /**
+   * See buildPersonalSuggestionData's call site: derives the order panel's
+   * per-button label/disabled state from whatever position is currently
+   * open (or null). Kept as a pure function of `openPosition` so it's easy
+   * to reason about independent of the rest of personal-mode state.
+   */
+  private buildOrderEntryButtonState(openPosition: Position | null): {
+    buyLabel: string;
+    sellLabel: string;
+    buyDisabledReason: string | null;
+    sellDisabledReason: string | null;
+  } {
+    if (openPosition === null) {
+      return {
+        buyLabel: 'Buy at Mkt',
+        sellLabel: 'Sell at Mkt',
+        buyDisabledReason: null,
+        sellDisabledReason: null,
+      };
+    }
+    const EXIT_NOT_WIRED =
+      'Closing a position from here isn’t wired up yet — exit it from the backend/broker directly.';
+    const ALREADY_OPEN = 'A position is already open — close it before opening another.';
+    // CE was bought via the Buy button, so Sell is the closing side (and
+    // vice-versa for PE/Sell) — same mapping the reference uses. An
+    // unrecognised optionType disables both sides with the generic reason
+    // rather than guessing which one would close it.
+    if (openPosition.optionType === 'CE') {
+      return {
+        buyLabel: 'Buy at Mkt',
+        sellLabel: 'Exit',
+        buyDisabledReason: ALREADY_OPEN,
+        sellDisabledReason: EXIT_NOT_WIRED,
+      };
+    }
+    if (openPosition.optionType === 'PE') {
+      return {
+        buyLabel: 'Exit',
+        sellLabel: 'Sell at Mkt',
+        buyDisabledReason: EXIT_NOT_WIRED,
+        sellDisabledReason: ALREADY_OPEN,
+      };
+    }
+    return {
+      buyLabel: 'Buy at Mkt',
+      sellLabel: 'Sell at Mkt',
+      buyDisabledReason: ALREADY_OPEN,
+      sellDisabledReason: ALREADY_OPEN,
+    };
+  }
+
+  private adjustPersonalLots(delta: number): void {
+    this.personalLots = Math.max(1, this.personalLots + delta);
+    this.renderPersonalSuggestion();
+  }
+
+  /**
+   * Keeps the option side in step with the TP/SL layout the user has
+   * dragged, in BOTH directions: TP above SL is a bullish structure, so
+   * the contract is a CE; drag TP below SL and it becomes a PE; drag it
+   * back across and it returns to CE. Without this the two could disagree
+   * — a bearish level layout still labelled (and traded as) a call.
+   *
+   * Compares PRICES, never the pills' screen positions. A chart with
+   * TradingView's "Invert scale" enabled renders a higher price lower
+   * down, and which contract gets bought must not depend on how the chart
+   * happens to be displayed.
+   *
+   * Deliberately does NOT re-seed personalLevels the way an explicit
+   * Buy/Sell click does (handlePersonalOrderClick) — here the levels ARE
+   * the user's input, and wiping them would throw away the very drag that
+   * triggered the flip.
+   *
+   * TP == SL (or either still unseeded) leaves direction alone: a
+   * degenerate layout implies no direction, and picking one would flip the
+   * contract as a drag passes through the crossover.
+   */
+  private syncPersonalDirectionToLevels(): void {
+    const { tp, sl } = this.personalLevels;
+    if (tp === null || sl === null || tp === sl) return;
+    const direction = tp > sl ? 'BUY' : 'SELL';
+    if (direction === this.personalDirection) return;
+    this.personalDirection = direction;
+    // Worth a log line: this silently changes which contract a subsequent
+    // Buy/Sell click would place.
+    log.info(
+      `personal direction flipped to ${direction} (${direction === 'BUY' ? 'CE' : 'PE'}) by TP/SL drag — tp=${tp}, sl=${sl}`,
+      { direction, tp, sl },
+    );
+  }
+
+  /** A Buy/Sell click in personal mode's order entry sets direction (re-seeding TP/SL under the new direction's convention if it changed) then submits immediately — there's no separate toggle-then-Trade step. */
+  private handlePersonalOrderClick(direction: 'BUY' | 'SELL'): void {
+    if (this.personalDirection !== direction) {
+      this.personalDirection = direction;
+      this.personalLevels = { tp: null, sl: null };
+      this.renderPersonalSuggestion();
+    }
+    this.handleTradeClick();
   }
 
   /** §3/R-OCO: "the single most dangerous state in the system" — open position(s) with no reachable backend to enforce their SL/TP. */
@@ -733,46 +983,32 @@ export class Bootstrap {
       this.frozenSnapshot = this.latestSnapshot;
       return;
     }
-    // A hidden confirm-view Trade button can fire blur/mouseleave as a
-    // side effect of the DOM swap into the confirm view — don't let that
-    // unfreeze mid-confirm.
-    if (this.confirmShowing) return;
+    // A blur/mouseleave fired as a side effect of the DOM swap that
+    // happens on click must not unfreeze mid-submission.
+    if (this.submitInFlight) return;
     this.isFrozen = false;
     this.frozenSnapshot = null;
     if (this.latestSnapshot !== null) this.applyMarketData(this.latestSnapshot);
   }
 
-  private buildTradeConfirmDetails(submitting: boolean): TradeConfirmDetails | null {
-    const ctx = this.activeConfirmContext;
-    const entryPrice = ctx?.suggestion.recommendedLtp ?? null;
-    if (ctx === null || entryPrice === null) return null;
-    const { suggestion, lots, lotSize } = ctx;
-    const riskRupees =
-      suggestion.sl !== null && lotSize !== null
-        ? Math.abs(entryPrice - suggestion.sl) * lotSize * lots
-        : null;
-    const optionSuffix = suggestion.recommendedOptionType
-      ? ` ${suggestion.recommendedOptionType}`
-      : '';
-    return {
-      direction: suggestion.direction,
-      strikeLabel: `${suggestion.recommendedSymbol}${optionSuffix}`,
-      lots,
-      entryPrice,
-      sl: suggestion.sl,
-      tp: suggestion.tp,
-      riskRupees,
-      submitting,
-      onConfirm: () => {
-        void this.handleConfirmClick();
-      },
-      onCancel: () => this.resetConfirmState(),
-    };
-  }
-
+  /**
+   * Trade submits immediately — there is no confirm step. The levels the
+   * order uses (entry/SL/TP) are the ones already drawn on the chart, so
+   * a dialog restating them was asking the user to re-read what they were
+   * already looking at.
+   *
+   * Everything the confirm click USED to carry is still enforced, just
+   * without a second click: the §P6 slippage guard, the strike/option
+   * validation, and the single-use idempotency key all live in
+   * submitOrder(). The one thing that genuinely needed replacing is
+   * double-submit protection, which used to come from disabling the
+   * confirm button on submit — `submitInFlight` now does that job, so a
+   * double-click on Trade can't place two orders.
+   */
   private handleTradeClick(): void {
     const widget = this.widget;
     if (widget === null) return;
+    if (this.submitInFlight) return; // §R-P6: never two orders from one intent
 
     // Freeze now even if hover/focus somehow didn't fire first (e.g.
     // keyboard activation without a preceding pointer hover).
@@ -781,8 +1017,8 @@ export class Bootstrap {
     this.frozenSnapshot = snapshot;
     // Personal mode reads the synthetic Suggestion built alongside
     // personalLevels instead of the snapshot's backend-computed one —
-    // everything downstream of this line (confirm view, slippage guard,
-    // submit) is identical either way.
+    // everything downstream of this line (slippage guard, submit) is
+    // identical either way.
     const suggestion =
       this.tradingMode === 'personal' ? this.personalSuggestion : (snapshot?.suggestion ?? null);
     if (suggestion === null || suggestion.recommendedLtp === null) {
@@ -798,15 +1034,20 @@ export class Bootstrap {
 
     this.activeConfirmContext = {
       suggestion,
-      lots: DEFAULT_LOTS,
+      lots: this.tradingMode === 'personal' ? this.personalLots : DEFAULT_LOTS,
       lotSize: snapshot?.chartContext?.lotSize ?? null,
     };
-    this.confirmShowing = true;
-    widget.setTradeConfirm(this.buildTradeConfirmDetails(false));
+    void this.submitOrder();
   }
 
+  /**
+   * Returns the widget to its normal (non-submitting) state. Every exit
+   * path out of submitOrder() runs this — a submitInFlight left set would
+   * permanently wedge the Trade button, so it is cleared here rather than
+   * at each individual return.
+   */
   private resetConfirmState(): void {
-    this.confirmShowing = false;
+    this.submitInFlight = false;
     this.activeConfirmContext = null;
     this.isFrozen = false;
     this.frozenSnapshot = null;
@@ -816,11 +1057,11 @@ export class Bootstrap {
 
   /**
    * §R-P6 — the highest-stakes call in the project. Idempotency key
-   * generated fresh here, exactly once per confirm click. No auto-retry:
+   * generated fresh here, exactly once per Trade click. No auto-retry:
    * this fires the request exactly once and reports whatever comes back,
    * including an honest 'ambiguous' outcome rather than guessing.
    */
-  private async handleConfirmClick(): Promise<void> {
+  private async submitOrder(): Promise<void> {
     const widget = this.widget;
     const bridge = this.bridge;
     const ctx = this.activeConfirmContext;
@@ -860,7 +1101,12 @@ export class Bootstrap {
       return;
     }
 
-    widget.setTradeConfirm(this.buildTradeConfirmDetails(true)); // §R-P6 disable-on-submit
+    // §R-P6 "never two orders from one intent". The confirm view used to
+    // provide this by disabling its own button on submit; with the confirm
+    // step gone, this flag is the only thing standing between a
+    // double-clicked Trade button and two live orders. Set AFTER the
+    // guards above so a rejected attempt doesn't lock the button.
+    this.submitInFlight = true;
 
     const clientOrderId = crypto.randomUUID();
     const request: PlaceOrderRequest = {
@@ -877,32 +1123,38 @@ export class Bootstrap {
       paperMode: true,
     };
 
-    let response: PlaceOrderResponse | null = null;
     try {
-      const rawResponse: PlaceOrderResponse | undefined = await chrome.runtime.sendMessage(request);
-      response = rawResponse ?? null;
-    } catch (error) {
-      log.error('order submission failed to reach the service worker', {
-        clientOrderId,
-        error: String(error),
-      });
-    }
+      let response: PlaceOrderResponse | null = null;
+      try {
+        const rawResponse: PlaceOrderResponse | undefined =
+          await chrome.runtime.sendMessage(request);
+        response = rawResponse ?? null;
+      } catch (error) {
+        log.error('order submission failed to reach the service worker', {
+          clientOrderId,
+          error: String(error),
+        });
+      }
 
-    if (response === null) {
-      widget.showToast('Unknown — check positions. Could not reach the extension background.');
-    } else if (response.outcome === 'accepted') {
-      const optionSuffix = suggestion.recommendedOptionType
-        ? ` ${suggestion.recommendedOptionType}`
-        : '';
-      widget.showToast(
-        `Order placed: ${suggestion.direction} ${lots}× ${suggestion.recommendedSymbol}${optionSuffix}`,
-      );
-    } else {
-      // Covers both 'rejected' and 'ambiguous' — §R-P6: inline error, widget stays usable, never a silent failure.
-      widget.showToast(response.message);
+      if (response === null) {
+        widget.showToast('Unknown — check positions. Could not reach the extension background.');
+      } else if (response.outcome === 'accepted') {
+        const optionSuffix = suggestion.recommendedOptionType
+          ? ` ${suggestion.recommendedOptionType}`
+          : '';
+        widget.showToast(
+          `Order placed: ${suggestion.direction} ${lots}× ${suggestion.recommendedSymbol}${optionSuffix}`,
+        );
+      } else {
+        // Covers both 'rejected' and 'ambiguous' — §R-P6: inline error, widget stays usable, never a silent failure.
+        widget.showToast(response.message);
+      }
+    } finally {
+      // Unconditional: an unexpected throw anywhere above must not leave
+      // submitInFlight set, which would wedge the Trade button for the
+      // rest of the session.
+      this.resetConfirmState();
     }
-
-    this.resetConfirmState();
   }
 
   /** Coalesces rapid drag-move updates into one storage write, not one per pointermove. */
@@ -941,6 +1193,10 @@ export class Bootstrap {
     this.bridge?.dispose();
     this.bridge = null;
     this.consecutiveUnavailableProbes = 0;
+    this.consecutiveManualProbes = 0;
+    // Belongs to the chart being torn down — a re-bootstrap (SPA nav to a
+    // different instrument) must re-resolve it from scratch.
+    this.lastKnownMappedSymbol = null;
     // Invalidates any mount attempt still in flight (e.g. an in-progress
     // waitForChartReady/probe from a stale attemptMount call).
     this.runToken += 1;

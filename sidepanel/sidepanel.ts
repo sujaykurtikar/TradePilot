@@ -466,6 +466,21 @@ async function init(): Promise<void> {
     infoTooltip.hidden = !infoTooltip.hidden;
   });
 
+  const settingsButton = byId<HTMLButtonElement>('header-settings-button');
+  const settingsMenu = byId<HTMLDivElement>('settings-menu');
+  settingsButton.addEventListener('click', () => {
+    settingsMenu.hidden = !settingsMenu.hidden;
+  });
+
+  const resetPositionButton = byId<HTMLButtonElement>('reset-widget-position');
+  resetPositionButton.addEventListener('click', () => {
+    void widgetStorage.patch({ widgetOffsets: {}, widgetCollapsed: false });
+    resetPositionButton.textContent = 'Reset ✓';
+    setTimeout(() => {
+      resetPositionButton.textContent = 'Reset widget position';
+    }, 1200);
+  });
+
   byId<HTMLButtonElement>('broker-cancel').addEventListener('click', closeBrokerModal);
 
   byId<HTMLFormElement>('broker-form').addEventListener('submit', (event) => {

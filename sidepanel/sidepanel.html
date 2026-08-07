@@ -13,20 +13,24 @@
           <span class="panel__broker-status-text" id="header-broker-text">No broker connected</span>
         </button>
         <div class="panel__header-actions">
-          <label class="panel__header-toggle">
+          <label
+            class="panel__header-toggle"
+            title="Show the Zing overlay on the chart"
+            aria-label="Show the Zing overlay on the chart"
+          >
             <input type="checkbox" id="header-enabled-toggle" />
             <span class="panel__header-toggle-track"></span>
           </label>
-          <span class="panel__header-toggle-label" title="Trade directly without a strategy suggestion">
-            Personal
-          </span>
           <label
-            class="panel__header-toggle"
-            title="Personal mode"
-            aria-label="Personal mode — trade directly without a strategy suggestion"
+            class="panel__header-toggle-group"
+            id="header-trading-mode-group"
+            title="Personal mode — trade directly without a strategy suggestion"
           >
-            <input type="checkbox" id="header-trading-mode-toggle" />
-            <span class="panel__header-toggle-track"></span>
+            <span class="panel__header-toggle-label">Personal</span>
+            <span class="panel__header-toggle">
+              <input type="checkbox" id="header-trading-mode-toggle" />
+              <span class="panel__header-toggle-track"></span>
+            </span>
           </label>
           <button type="button" class="panel__icon-button" id="header-info-button" title="API status" aria-label="API status">
             ⓘ
@@ -37,6 +41,12 @@
         </div>
       </header>
       <p class="panel__info-tooltip" id="header-info-tooltip" hidden></p>
+
+      <div class="panel__settings-menu" id="settings-menu" hidden>
+        <button type="button" class="panel__button panel__settings-menu-button" id="reset-widget-position">
+          Reset widget position
+        </button>
+      </div>
 
       <nav class="panel__tabs" role="tablist">
         <button type="button" class="panel__tab panel__tab--active" id="tab-signals" data-tab="signals">

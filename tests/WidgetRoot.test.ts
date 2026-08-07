@@ -138,6 +138,33 @@ describe('WidgetRoot — §R-P2 mode switching', () => {
     widget.setMode('anchored');
     expect(manualBadge?.style.display).toBe('none');
   });
+
+  it('switching to manual mode hides the connector line instead of leaving it stranded at its last anchored-mode position', async () => {
+    // A scale that separates tp/sl/livePrice — the default stub maps every
+    // price to the same y, which collapses the line to nothing to draw.
+    widget = makeWidget({
+      bridge: makeStubBridge({ priceToY: (p) => 24400 - p, yToPrice: (y) => 24400 - y }),
+    });
+    await widget.mount();
+    await nextFrame();
+    await nextFrame();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const lineTp = shadow?.querySelector('.tp-connector-line--tp') as HTMLElement;
+    const lineSl = shadow?.querySelector('.tp-connector-line--sl') as HTMLElement;
+    // Anchored mode with valid tp/sl/livePrice draws the line.
+    expect(lineTp.classList.contains('tp-positioned--hidden')).toBe(false);
+    expect(lineSl.classList.contains('tp-positioned--hidden')).toBe(false);
+
+    // setMode('manual') stops the rAF loop that positions the line every
+    // frame (AnchorManager.onFrame) — without an explicit hide, it would
+    // stay painted at whatever transform it had the instant before, while
+    // the pills separately jump to the fixed manual-layout stack. That
+    // mismatch is what showed up live as a stray oversized line.
+    widget.setMode('manual', 'coordinate math failed');
+    expect(lineTp.classList.contains('tp-positioned--hidden')).toBe(true);
+    expect(lineSl.classList.contains('tp-positioned--hidden')).toBe(true);
+  });
 });
 
 describe('WidgetRoot — §P6t position-mode TP/SL drag', () => {
@@ -205,7 +232,7 @@ describe('WidgetRoot — §P6t position-mode TP/SL drag', () => {
   });
 
   it('a poll landing mid-drag does not yank the pill (§P6t mid-drag guard)', async () => {
-    const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
+    const bridge = makeStubBridge({ priceToY: (p) => 24400 - p, yToPrice: (y) => 24400 - y });
     widget = makeWidget({ bridge });
     await widget.mount();
     widget.setPosition(makePosition());
@@ -237,7 +264,7 @@ describe('WidgetRoot — §P6t position-mode TP/SL drag', () => {
   });
 
   it('committing a TP drag calls onPositionRiskDrag with the price computed via the bridge', async () => {
-    const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
+    const bridge = makeStubBridge({ priceToY: (p) => 24400 - p, yToPrice: (y) => 24400 - y });
     const onPositionRiskDrag = vi.fn();
     widget = makeWidget({ bridge, onPositionRiskDrag });
     await widget.mount();
@@ -299,7 +326,7 @@ describe('WidgetRoot — §P6t position-mode TP/SL drag', () => {
   });
 
   it('dragging a pill pre-trade in personal mode calls onManualLevelDragEnd with the bridge-computed price', async () => {
-    const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
+    const bridge = makeStubBridge({ priceToY: (p) => 24400 - p, yToPrice: (y) => 24400 - y });
     const onManualLevelDragEnd = vi.fn();
     const onPositionRiskDrag = vi.fn();
     widget = makeWidget({
@@ -334,7 +361,7 @@ describe('WidgetRoot — §P6t position-mode TP/SL drag', () => {
   });
 
   it('personal-mode drag commit resets the pill screen offset, so the next render lands exactly on the new price (not the new price PLUS the old drag delta)', async () => {
-    const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
+    const bridge = makeStubBridge({ priceToY: (p) => 24400 - p, yToPrice: (y) => 24400 - y });
     widget = makeWidget({
       bridge,
       initialTradingMode: 'personal',
@@ -373,14 +400,14 @@ describe('WidgetRoot — §P6t position-mode TP/SL drag', () => {
     handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: -50 }));
     await nextFrame();
 
-    // New price is 24200 -> priceToY(24200) = 1000 - 24200 = -23200.
+    // New price is 24200 -> priceToY(24200) = 24400 - 24200 = 200.
     // If the -50 drag offset were still applied on top (the bug), this
-    // would instead read -23250.
-    expect(pill.style.transform).toContain('-23200');
+    // would instead read 150.
+    expect(pill.style.transform).toContain('200px, 0)');
   });
 
   it('an open position still wins over personal mode — dragging goes to onPositionRiskDrag, not onManualLevelDragEnd', async () => {
-    const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
+    const bridge = makeStubBridge({ priceToY: (p) => 24400 - p, yToPrice: (y) => 24400 - y });
     const onManualLevelDragEnd = vi.fn();
     const onPositionRiskDrag = vi.fn();
     widget = makeWidget({
@@ -406,6 +433,285 @@ describe('WidgetRoot — §P6t position-mode TP/SL drag', () => {
 
     expect(onPositionRiskDrag).toHaveBeenCalledWith('tp', 24200);
     expect(onManualLevelDragEnd).not.toHaveBeenCalled();
+  });
+});
+
+describe('WidgetRoot — zooming a level off the visible price axis', () => {
+  let widget: WidgetRoot | null = null;
+
+  afterEach(() => {
+    widget?.destroy();
+    widget = null;
+    document.body.innerHTML = '';
+  });
+
+  /**
+   * Pane spans y 0..600, priced 25000 (top) down to 24400 (bottom).
+   *
+   * priceToY returns NULL outside that range — matching the real adapter,
+   * which refuses to extrapolate past the pane (§R-P4a). yToPrice still
+   * answers at the pane edges, which is how an off-screen level's edge is
+   * determined. An earlier version of these fixtures let priceToY
+   * extrapolate; that modelled a bridge we don't have, and hid the fact
+   * that the connector line was left with no endpoint to reach for.
+   */
+  function makeZoomedBridge(): ChartBridge {
+    return makeStubBridge({
+      yToPrice: (y) => 25000 - y,
+      priceToY: (p) => (p > 25000 || p < 24400 ? null : 25000 - p),
+    });
+  }
+
+  it('takes an off-screen TP pill off-screen with its price, while the connector keeps stretching to the pane edge', async () => {
+    widget = makeWidget({
+      bridge: makeZoomedBridge(),
+      suggestion: {
+        symbolLabel: 'NIFTY CE',
+        livePrice: () => 24600, // y = 400
+        tp: 25400, // y = -400: rescaled out of view above the pane
+        sl: 24500, // y = 500: still visible
+        onTrade: () => {},
+      },
+    });
+    await widget.mount();
+    await nextFrame();
+    await nextFrame();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const tpPill = shadow?.querySelector('.tp-pill--tp') as HTMLElement;
+    const slPill = shadow?.querySelector('.tp-pill--sl') as HTMLElement;
+    const lineTp = shadow?.querySelector('.tp-connector-line--tp') as HTMLElement;
+    const lineSl = shadow?.querySelector('.tp-connector-line--sl') as HTMLElement;
+
+    // Off the chart with its price — the pill only ever moves relative to
+    // price via its own drag handle, never because of a rescale.
+    expect(tpPill.classList.contains('tp-positioned--hidden')).toBe(true);
+    expect(slPill.style.transform).toContain('500px, 0)');
+
+    // The connector is the thing that must NOT disappear: it stretches to
+    // the pane's top edge (0) and keeps running down to the pivot, so it
+    // reads as "the level is off-screen up there" rather than as broken.
+    expect(lineTp.classList.contains('tp-positioned--hidden')).toBe(false);
+    expect(lineTp.style.transform).toContain('0px, 0)');
+    expect(lineTp.style.height).toBe('400px'); // pane top (0) -> the 400 pivot
+    expect(lineSl.style.height).toBe('100px');
+  });
+
+  it('runs the connector to the edge for a level held back by the pill inset, not to a bare point', async () => {
+    // Observed live: TP resolved to y=50 in a pane starting at y=42 — on
+    // the chart as far as the bridge was concerned, but inside the pill's
+    // half-height inset, so the pill was held back while the line drew
+    // right up to y=50 and stopped there with nothing on the end of it.
+    // The line must reach the edge instead, so it reads as "the level is
+    // off the top" rather than as a broken line.
+    widget = makeWidget({
+      bridge: makeZoomedBridge(),
+      suggestion: {
+        symbolLabel: 'NIFTY CE',
+        livePrice: () => 24600, // y = 400
+        tp: 24990, // y = 10: inside the pane (0..600), inside the 18px inset
+        sl: 24500, // y = 500
+        onTrade: () => {},
+      },
+    });
+    await widget.mount();
+    await nextFrame();
+    await nextFrame();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const tpPill = shadow?.querySelector('.tp-pill--tp') as HTMLElement;
+    const lineTp = shadow?.querySelector('.tp-connector-line--tp') as HTMLElement;
+
+    expect(tpPill.classList.contains('tp-positioned--hidden')).toBe(true);
+    expect(lineTp.classList.contains('tp-positioned--hidden')).toBe(false);
+    expect(lineTp.style.transform).toContain('0px, 0)'); // the pane's top edge, not y=10
+    expect(lineTp.style.height).toBe('400px');
+  });
+
+  it('hides a connector half only once none of it is on the chart at all', async () => {
+    widget = makeWidget({
+      bridge: makeZoomedBridge(),
+      suggestion: {
+        symbolLabel: 'NIFTY CE',
+        livePrice: () => 25200, // y = -200: pivot itself above the pane
+        tp: 25400, // y = -400
+        sl: 24500, // y = 500
+        onTrade: () => {},
+      },
+    });
+    await widget.mount();
+    await nextFrame();
+    await nextFrame();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    // -400..-200 is entirely above the pane, so there is nothing to draw.
+    expect(
+      shadow?.querySelector('.tp-connector-line--tp')?.classList.contains('tp-positioned--hidden'),
+    ).toBe(true);
+    // -200..500 still crosses the chart, so the visible 0..500 part draws.
+    const lineSl = shadow?.querySelector('.tp-connector-line--sl') as HTMLElement;
+    expect(lineSl.classList.contains('tp-positioned--hidden')).toBe(false);
+    expect(lineSl.style.height).toBe('500px');
+  });
+
+  it('hides an off-screen SL the same way — both edges behave identically', async () => {
+    widget = makeWidget({
+      bridge: makeZoomedBridge(),
+      suggestion: {
+        symbolLabel: 'NIFTY CE',
+        livePrice: () => 24600, // y = 400
+        tp: 24500, // y = 500, visible
+        sl: 23800, // y = 1200: rescaled out of view below the pane
+        onTrade: () => {},
+      },
+    });
+    await widget.mount();
+    await nextFrame();
+    await nextFrame();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const slPill = shadow?.querySelector('.tp-pill--sl') as HTMLElement;
+    const lineSl = shadow?.querySelector('.tp-connector-line--sl') as HTMLElement;
+
+    expect(slPill.classList.contains('tp-positioned--hidden')).toBe(true);
+    // Connector still stretches to the bottom edge (600) rather than
+    // vanishing with the pill.
+    expect(lineSl.classList.contains('tp-positioned--hidden')).toBe(false);
+    expect(lineSl.style.height).toBe('200px'); // the 400 pivot -> pane bottom (600)
+  });
+
+  it('ignores a persisted TP/SL offset entirely — the pill renders at its real price, not an old build\'s leftover position', async () => {
+    // A level offset can only be a leftover from before drag commits
+    // started zeroing it (see the constructor comment above initialOffsets)
+    // — the constructor filters it out rather than restoring it. Without
+    // that filter this dy:300 would push a y=300 pill to y=600, off the
+    // pane, and hide it.
+    const onOffsetChange = vi.fn();
+    widget = makeWidget({
+      bridge: makeZoomedBridge(),
+      initialOffsets: {
+        'level-pill-tp': { dx: 0, dy: 300 },
+        'suggestion-card': { dx: 0, dy: 25 },
+      },
+      onOffsetChange,
+      suggestion: {
+        symbolLabel: 'NIFTY CE',
+        livePrice: () => 24600, // y = 400
+        tp: 24700, // y = 300
+        sl: 24500, // y = 500
+        onTrade: () => {},
+      },
+    });
+    await widget.mount();
+    await nextFrame();
+    await nextFrame();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const tpPill = shadow?.querySelector('.tp-pill--tp') as HTMLElement;
+    const card = shadow?.querySelector('.tp-card') as HTMLElement;
+
+    expect(tpPill.classList.contains('tp-positioned--hidden')).toBe(false);
+    expect(tpPill.style.transform).toContain('300px, 0)');
+    // The card's own offset IS cosmetic and still applies: 400 + 25.
+    expect(card.style.transform).toContain('425px, 0)');
+  });
+
+  it('a pill dragged past the pane edge mid-drag hides, and the connector stretches to meet it', async () => {
+    widget = makeWidget({
+      bridge: makeZoomedBridge(),
+      suggestion: {
+        symbolLabel: 'NIFTY CE',
+        livePrice: () => 24600, // y = 400
+        tp: 24700, // y = 300, starts on-screen
+        sl: 24500, // y = 500
+        onTrade: () => {},
+      },
+    });
+    await widget.mount();
+    await nextFrame();
+    await nextFrame();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const handle = shadow?.querySelector('.tp-pill--tp .tp-pill__handle') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    handle.hasPointerCapture = vi.fn().mockReturnValue(true);
+
+    handle.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1, clientX: 0, clientY: 0, button: 0 }),
+    );
+    // Drag DOWN 400px: y 300 + 400 = 700, well past paneRect.bottom (600).
+    handle.dispatchEvent(
+      new PointerEvent('pointermove', { pointerId: 1, clientX: 0, clientY: 400 }),
+    );
+    await nextFrame();
+    await nextFrame();
+
+    const tpPill = shadow?.querySelector('.tp-pill--tp') as HTMLElement;
+    const lineTp = shadow?.querySelector('.tp-connector-line--tp') as HTMLElement;
+    expect(tpPill.classList.contains('tp-positioned--hidden')).toBe(true);
+    // The connector stretches to the bottom edge instead of following the
+    // pill off the chart or vanishing.
+    expect(lineTp.classList.contains('tp-positioned--hidden')).toBe(false);
+
+    handle.dispatchEvent(
+      new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: 400 }),
+    );
+  });
+
+  it('never writes a level offset back to storage, so stale values stop being refreshed', async () => {
+    const onOffsetChange = vi.fn();
+    widget = makeWidget({ bridge: makeZoomedBridge(), onOffsetChange });
+    await widget.mount();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const handle = shadow?.querySelector('.tp-pill--tp .tp-pill__handle') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    handle.hasPointerCapture = vi.fn().mockReturnValue(true);
+
+    handle.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1, clientX: 0, clientY: 0, button: 0 }),
+    );
+    handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: 40 }));
+
+    expect(onOffsetChange).not.toHaveBeenCalledWith('level-pill-tp', expect.anything());
+  });
+
+  it('measures a drag from the level price itself, so a drag moves TP by exactly the distance dragged', async () => {
+    const onPositionRiskDrag = vi.fn();
+    widget = makeWidget({ bridge: makeZoomedBridge(), onPositionRiskDrag });
+    await widget.mount();
+    widget.setPosition({
+      positionId: 'pos-1',
+      account: 'acct-1',
+      symbol: 'NIFTY',
+      optionType: 'CE',
+      strike: 24100,
+      entrySpot: 24080,
+      tp: 24700, // y = 300, on screen and grabbable
+      sl: 24500,
+      delta: 0.5,
+      unrealizedPnl: 100,
+      tpState: { kind: 'confirmed' },
+      slState: { kind: 'confirmed' },
+    });
+    await nextFrame();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const handle = shadow?.querySelector('.tp-pill--tp .tp-pill__handle') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    handle.hasPointerCapture = vi.fn().mockReturnValue(true);
+
+    handle.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1, clientX: 0, clientY: 0, button: 0 }),
+    );
+    handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: 40 }));
+
+    // y 300 + 40 = 340 -> price 25000 - 340 = 24660, i.e. exactly the 40
+    // points dragged, measured from the level's own price.
+    expect(onPositionRiskDrag).toHaveBeenCalledWith('tp', 24660);
   });
 });
 

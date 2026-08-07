@@ -24,6 +24,11 @@ import {
   type SuggestionCardComponent,
   type TradeConfirmDetails,
 } from './components/SuggestionCard';
+import {
+  createOrderPanel,
+  type OrderPanelComponent,
+  type OrderPanelProps,
+} from './components/OrderPanel';
 import { showToast } from './components/Toast';
 import { getLogger } from '../utils/logger';
 
@@ -41,6 +46,12 @@ export interface WidgetSuggestionData {
   readonly onTrade: () => void;
   /** §P6: freeze the suggestion on hover/focus of Trade — levels must not shift mid-decision. */
   readonly onTradeFocusChange?: (focused: boolean) => void;
+  /**
+   * Personal mode only. Present ⇒ the standalone order panel is shown
+   * (see components/OrderPanel.ts); absent ⇒ it stays hidden. The panel
+   * reuses this suggestion's `symbolLabel`, so it isn't repeated here.
+   */
+  readonly orderEntry?: Omit<OrderPanelProps, 'symbolLabel'> | null;
 }
 
 /** §R-P2's degradation ladder: 'anchored' = full price tracking, 'manual' = fixed draggable panel + badge (coordinate math is untrusted, but values are still shown/tradeable). */
@@ -84,6 +95,13 @@ export interface WidgetRootOptions {
 const TARGET_TP = 'level-pill-tp';
 const TARGET_SL = 'level-pill-sl';
 const TARGET_SUGGESTION = 'suggestion-card';
+const TARGET_ORDER_PANEL = 'order-panel';
+
+/** Where the free-floating order panel parks by default, inset from the pane's bottom-left. */
+const ORDER_PANEL_INSET_X_PX = 24;
+const ORDER_PANEL_INSET_Y_PX = 96;
+/** Inset the panel is clamped to on all four sides (never dragged fully off the pane). */
+const ORDER_PANEL_EDGE_MARGIN_PX = 8;
 
 /** Gutter from right edge of the chart pane — pills/card/line anchor at this X. */
 const CONNECTOR_GUTTER_PX = 12;
@@ -104,6 +122,7 @@ export class WidgetRoot {
   private readonly tpPill: LevelPillComponent;
   private readonly slPill: LevelPillComponent;
   private readonly suggestionCard: SuggestionCardComponent;
+  private readonly orderPanel: OrderPanelComponent;
   private readonly puck: HTMLButtonElement;
   private readonly demoBadge: HTMLDivElement | null = null;
   private suggestion: WidgetSuggestionData;
@@ -124,7 +143,9 @@ export class WidgetRoot {
   private readonly unprotectedBanner: HTMLDivElement;
   private readonly connectorLineTp: HTMLDivElement;
   private readonly connectorLineSl: HTMLDivElement;
-
+  private readonly hLineTp: HTMLDivElement;
+  private readonly hLineSl: HTMLDivElement;
+  private readonly hLineEntry: HTMLDivElement;
   constructor(opts: WidgetRootOptions) {
     this.suggestion = opts.suggestion;
     this.host = new ShadowHost();
@@ -155,13 +176,28 @@ export class WidgetRoot {
     this.unprotectedBanner.style.display = 'none';
     this.unprotectedBanner.setAttribute('role', 'alert');
 
+    // A TP/SL pill's position IS its price: dragging one commits to a new
+    // price and zeroes the offset (handleLevelDragEnd, setPosition), so a
+    // STORED offset for one can only be a leftover from a build that
+    // predates that. Restoring it displaces the pill — and the connector
+    // line drawn to it — from the level it labels, which showed up live as
+    // a line stretching to a pill that wasn't there (the pill having been
+    // pushed off the pane by the same offset). Not persisted either, so
+    // the stale values already in chrome.storage stop being rewritten.
+    // Only the card carries a cosmetic offset; the pills mirror its dx.
+    const isLevel = (id: string): boolean => id === TARGET_TP || id === TARGET_SL;
     if (opts.initialOffsets) {
       for (const [id, offset] of Object.entries(opts.initialOffsets)) {
+        if (isLevel(id)) continue;
         this.dragManager.hydrate(id, offset);
       }
     }
-    if (opts.onOffsetChange) {
-      this.dragManager.onChange(opts.onOffsetChange);
+    const onOffsetChange = opts.onOffsetChange;
+    if (onOffsetChange) {
+      this.dragManager.onChange((id, offset) => {
+        if (isLevel(id)) return;
+        onOffsetChange(id, offset);
+      });
     }
 
     this.tpPill = createLevelPill({ variant: 'tp', price: opts.suggestion.tp });
@@ -173,6 +209,33 @@ export class WidgetRoot {
       staleReason: opts.suggestion.staleReason ?? null,
       onTrade: opts.suggestion.onTrade,
     });
+
+    this.orderPanel = createOrderPanel({
+      symbolLabel: opts.suggestion.symbolLabel,
+      lots: opts.suggestion.orderEntry?.lots ?? 1,
+      lotSize: opts.suggestion.orderEntry?.lotSize ?? null,
+      canDecrementLots: opts.suggestion.orderEntry?.canDecrementLots ?? false,
+      onIncrementLots: () => this.suggestion.orderEntry?.onIncrementLots(),
+      onDecrementLots: () => this.suggestion.orderEntry?.onDecrementLots(),
+      onBuy: () => this.suggestion.orderEntry?.onBuy(),
+      onSell: () => this.suggestion.orderEntry?.onSell(),
+      ...(opts.suggestion.orderEntry?.disabled === undefined
+        ? {}
+        : { disabled: opts.suggestion.orderEntry.disabled }),
+      ...(opts.suggestion.orderEntry?.buyLabel === undefined
+        ? {}
+        : { buyLabel: opts.suggestion.orderEntry.buyLabel }),
+      ...(opts.suggestion.orderEntry?.sellLabel === undefined
+        ? {}
+        : { sellLabel: opts.suggestion.orderEntry.sellLabel }),
+      ...(opts.suggestion.orderEntry?.buyDisabledReason === undefined
+        ? {}
+        : { buyDisabledReason: opts.suggestion.orderEntry.buyDisabledReason }),
+      ...(opts.suggestion.orderEntry?.sellDisabledReason === undefined
+        ? {}
+        : { sellDisabledReason: opts.suggestion.orderEntry.sellDisabledReason }),
+    });
+    this.orderPanel.element.classList.add('tp-positioned', 'tp-positioned--hidden');
 
     for (const el of [this.tpPill.element, this.slPill.element, this.suggestionCard.element]) {
       el.classList.add('tp-positioned', 'tp-mount-animate');
@@ -196,12 +259,26 @@ export class WidgetRoot {
     this.connectorLineSl = document.createElement('div');
     this.connectorLineSl.className = 'tp-connector-line tp-connector-line--sl tp-positioned tp-positioned--hidden';
 
+    // Full-width price lines (like TradingView's own order lines) — one per
+    // level, run edge-to-edge across the pane at that level's price so it
+    // reads at a glance without following the pill/line down to the label.
+    this.hLineTp = document.createElement('div');
+    this.hLineTp.className = 'tp-hline tp-hline--tp tp-positioned tp-positioned--hidden';
+    this.hLineSl = document.createElement('div');
+    this.hLineSl.className = 'tp-hline tp-hline--sl tp-positioned tp-positioned--hidden';
+    this.hLineEntry = document.createElement('div');
+    this.hLineEntry.className = 'tp-hline tp-hline--entry tp-positioned tp-positioned--hidden';
+
     this.host.layer.append(
+      this.hLineTp,
+      this.hLineSl,
+      this.hLineEntry,
       this.connectorLineTp,
       this.connectorLineSl,
       this.tpPill.element,
       this.suggestionCard.element,
       this.slPill.element,
+      this.orderPanel.element,
       this.puck,
       this.manualBadge,
       this.unprotectedBanner,
@@ -214,6 +291,9 @@ export class WidgetRoot {
     // is unrestricted.
     this.dragManager.bind(TARGET_TP, this.tpPill.handleElement, { lockAxis: 'x' });
     this.dragManager.bind(TARGET_SL, this.slPill.handleElement, { lockAxis: 'x' });
+    // Free-floating: no axis lock and no price anchor — the panel represents
+    // no price, so its drag offset is the ONLY thing that moves it.
+    this.dragManager.bind(TARGET_ORDER_PANEL, this.orderPanel.handleElement);
     // The card's own icon still carries the group id's offset (so it stays
     // put if untouched), but dragging it now moves all three elements
     // together as one rigid group — see DragManager.bindGroup.
@@ -226,6 +306,9 @@ export class WidgetRoot {
     // (§P3) — this listener only acts when a position is set, turning a
     // committed drag into a price-drag instead of a screen offset.
     this.dragManager.onDragEnd((id, offset) => this.handleLevelDragEnd(id, offset));
+    // The order panel needs no drag-end handling of its own: it stays exactly
+    // where it is dropped (see applyOrderPanel), so its raw drag offset is
+    // already the whole answer.
     // Live price-tag update on every pointermove during a TP/SL drag, not
     // just at the end — see displayedPrice()'s doc comment. This is purely
     // a label readout; it does not touch AnchorManager's positioning math
@@ -235,12 +318,23 @@ export class WidgetRoot {
       if (id === TARGET_TP || id === TARGET_SL) this.renderPills();
     });
 
+    // offPaneBehavior: 'hide' — a TP/SL pill sits at its real price and
+    // nowhere else; rescaling the price axis until that price is off the
+    // visible range takes the pill off-screen with it, the same as a
+    // candle at that price. It only ever moves relative to price when the
+    // user drags its own handle — never because the chart was rescaled.
+    // The connector line stays connected to the real prices (unpinned,
+    // clipped at the pane edge in applyConnectorLine), so it keeps
+    // stretching to follow the rescale instead of disappearing along with
+    // the pill. The card is unconstrained: it rides the live price, which
+    // is on-screen by definition.
     this.anchorManager.addTarget({
       id: TARGET_TP,
       element: this.tpPill.element,
       getPrice: () => this.effectiveTpPrice(),
       pinRight: true,
       mirrorOffsetXFrom: TARGET_SUGGESTION,
+      offPaneBehavior: 'hide',
     });
     this.anchorManager.addTarget({
       id: TARGET_SL,
@@ -248,6 +342,7 @@ export class WidgetRoot {
       getPrice: () => this.effectiveSlPrice(),
       pinRight: true,
       mirrorOffsetXFrom: TARGET_SUGGESTION,
+      offPaneBehavior: 'hide',
     });
     this.anchorManager.addTarget({
       id: TARGET_SUGGESTION,
@@ -257,6 +352,8 @@ export class WidgetRoot {
     });
 
     this.anchorManager.onFrame((paneRect) => this.applyConnectorLine(paneRect));
+    this.anchorManager.onFrame((paneRect) => this.applyHorizontalLines(paneRect));
+    this.anchorManager.onFrame((paneRect) => this.applyOrderPanel(paneRect));
 
     this.unsubscribeState = this.stateManager.subscribe((state) => {
       this.renderCollapseState(state.collapsed);
@@ -274,6 +371,10 @@ export class WidgetRoot {
     display(this.suggestionCard.element, !collapsed);
     display(this.connectorLineTp, !collapsed);
     display(this.connectorLineSl, !collapsed);
+    display(this.hLineTp, !collapsed);
+    display(this.hLineSl, !collapsed);
+    display(this.hLineEntry, !collapsed);
+    display(this.orderPanel.element, !collapsed);
     display(this.puck, collapsed);
   }
 
@@ -308,6 +409,31 @@ export class WidgetRoot {
     this.suggestion = next;
     this.renderPills();
     this.renderSuggestionCard();
+    this.renderOrderPanel();
+  }
+
+  private renderOrderPanel(): void {
+    const order = this.suggestion.orderEntry;
+    if (order == null) return; // hidden next frame by applyOrderPanel
+    this.orderPanel.update({
+      symbolLabel: this.suggestion.symbolLabel,
+      lots: order.lots,
+      lotSize: order.lotSize,
+      canDecrementLots: order.canDecrementLots,
+      onIncrementLots: order.onIncrementLots,
+      onDecrementLots: order.onDecrementLots,
+      onBuy: order.onBuy,
+      onSell: order.onSell,
+      ...(order.disabled === undefined ? {} : { disabled: order.disabled }),
+      ...(order.buyLabel === undefined ? {} : { buyLabel: order.buyLabel }),
+      ...(order.sellLabel === undefined ? {} : { sellLabel: order.sellLabel }),
+      ...(order.buyDisabledReason === undefined
+        ? {}
+        : { buyDisabledReason: order.buyDisabledReason }),
+      ...(order.sellDisabledReason === undefined
+        ? {}
+        : { sellDisabledReason: order.sellDisabledReason }),
+    });
   }
 
   /**
@@ -409,7 +535,12 @@ export class WidgetRoot {
     const currentPrice = variant === 'tp' ? this.effectiveTpPrice() : this.effectiveSlPrice();
     if (currentPrice === null) return; // nothing to drag from — chart/position not ready
 
-    const baseY = this.bridge.priceToY(currentPrice);
+    // A pill can only be dragged while it's actually drawn — 'hide' mode
+    // means an off-screen level has no handle to grab — so this reads the
+    // same Y the pill was rendered at, no clamping needed: the drag moves
+    // the price by exactly the pixel distance dragged.
+    const paneRect = this.bridge.paneRect();
+    const baseY = this.anchorManager.resolveY(currentPrice, paneRect, 'hide');
     if (baseY === null) return; // §7.1: never guess a price from an unavailable coordinate
     const newPrice = this.bridge.yToPrice(baseY + offset.dy);
     if (newPrice === null) return;
@@ -446,6 +577,7 @@ export class WidgetRoot {
       ...(this.suggestion.onTradeFocusChange
         ? { onTradeFocusChange: this.suggestion.onTradeFocusChange }
         : {}),
+      ...(this.suggestion.orderEntry ? { orderEntry: this.suggestion.orderEntry } : {}),
       confirm: this.currentConfirm,
     });
     if (this.mode === 'manual') this.applyManualLayout();
@@ -515,6 +647,24 @@ export class WidgetRoot {
     this.mode = mode;
     if (mode === 'manual') {
       this.anchorManager.stop();
+      // The connector line is positioned every rAF frame via
+      // anchorManager.onFrame (applyConnectorLine) — stopping that loop
+      // above freezes it at its LAST anchored-mode transform, while the
+      // pills separately snap straight to the fixed manual-layout
+      // position via applyManualLayout() below. Those two are computed
+      // completely differently (live price coordinates vs. a static
+      // top-right stack), so left running together the line visibly
+      // detaches into a stale diagonal/oversized streak across the
+      // chart. Manual layout has no connector geometry of its own, so
+      // just hide both segments instead of leaving them stranded.
+      this.connectorLineTp.classList.add('tp-positioned--hidden');
+      this.connectorLineSl.classList.add('tp-positioned--hidden');
+      this.hLineTp.classList.add('tp-positioned--hidden');
+      this.hLineSl.classList.add('tp-positioned--hidden');
+      this.hLineEntry.classList.add('tp-positioned--hidden');
+      // Same reason as the lines above: the panel is positioned from
+      // paneRect every frame, and that loop is stopped in manual mode.
+      this.orderPanel.element.classList.add('tp-positioned--hidden');
       this.manualBadge.style.display = '';
       this.manualBadgeReasonEl.textContent = reason;
       this.applyManualLayout();
@@ -543,50 +693,122 @@ export class WidgetRoot {
    * to the pills/card without being its own AnchorTarget.
    */
   private applyConnectorLine(paneRect: PaneRectOrNull): void {
-    const tpPrice = this.effectiveTpPrice();
-    const pivotPrice = this.suggestion.livePrice();
-    const slPrice = this.effectiveSlPrice();
-
-    // The line stays attached to TP and SL as long as both of THOSE are
-    // known — a pivot (live price / card) that's temporarily unavailable
-    // must not tear the whole connector down, only fall back to splitting
-    // it at the midpoint instead of the real entry price.
-    if (paneRect === null || tpPrice === null || slPrice === null) {
+    // Read back where AnchorManager actually put each pill this frame,
+    // rather than re-deriving it from the prices. The two used to compute
+    // their own positions from the same inputs and could still disagree —
+    // different edge rules, and a bridge that answers null for an off-pane
+    // price instead of a coordinate — which is what left a line drawn to a
+    // point with no pill on it, and a line vanishing while its pill was
+    // still up. Drag offsets are already folded in here too.
+    const tpY = this.anchorManager.connectorAnchorY(TARGET_TP);
+    const slY = this.anchorManager.connectorAnchorY(TARGET_SL);
+    const pivotY = this.anchorManager.connectorAnchorY(TARGET_SUGGESTION);
+    // A pivot (live price / card) that's temporarily unavailable must not
+    // tear the connector down — fall back to splitting it at the midpoint.
+    const effectivePivotY = pivotY ?? (tpY !== null && slY !== null ? (tpY + slY) / 2 : null);
+    if (paneRect === null || effectivePivotY === null) {
       this.connectorLineTp.classList.add('tp-positioned--hidden');
       this.connectorLineSl.classList.add('tp-positioned--hidden');
       return;
     }
 
-    const tpY = this.bridge.priceToY(tpPrice);
-    const slY = this.bridge.priceToY(slPrice);
-    if (tpY === null || slY === null) {
-      this.connectorLineTp.classList.add('tp-positioned--hidden');
-      this.connectorLineSl.classList.add('tp-positioned--hidden');
-      return;
-    }
-    const pivotY = pivotPrice === null ? null : this.bridge.priceToY(pivotPrice);
-    const effectivePivotY = pivotY ?? (tpY + slY) / 2;
-
-    // Include any drag offsets so the line tracks a drag in progress
-    const tpDy = this.dragManager.getOffset(TARGET_TP).dy;
-    const pivotDy = this.dragManager.getOffset(TARGET_SUGGESTION).dy;
-    const slDy = this.dragManager.getOffset(TARGET_SL).dy;
     const sharedDx = this.dragManager.getOffset(TARGET_SUGGESTION).dx;
-
-    const y1 = tpY + tpDy;
-    const yPivot = effectivePivotY + pivotDy;
-    const y2 = slY + slDy;
     const x = paneRect.right - CONNECTOR_GUTTER_PX + sharedDx;
 
-    // TP segment: from min(y1, yPivot) to max(y1, yPivot)
-    this.connectorLineTp.classList.remove('tp-positioned--hidden');
-    this.connectorLineTp.style.transform = `translate3d(${x}px, ${Math.min(y1, yPivot)}px, 0)`;
-    this.connectorLineTp.style.height = `${Math.abs(yPivot - y1)}px`;
+    this.applyConnectorSegment(this.connectorLineTp, tpY, effectivePivotY, x, paneRect);
+    this.applyConnectorSegment(this.connectorLineSl, slY, effectivePivotY, x, paneRect);
+  }
 
-    // SL segment: from min(yPivot, y2) to max(yPivot, y2)
-    this.connectorLineSl.classList.remove('tp-positioned--hidden');
-    this.connectorLineSl.style.transform = `translate3d(${x}px, ${Math.min(yPivot, y2)}px, 0)`;
-    this.connectorLineSl.style.height = `${Math.abs(y2 - yPivot)}px`;
+  /**
+   * Full-width TP/SL/entry price lines, edge-to-edge across the pane —
+   * TradingView's own order-line convention (§ pasted reference screenshot).
+   * Reads AnchorManager.drawnY so a level's line is on-screen exactly when
+   * its pill is, and never floats to a substitute edge position the way the
+   * vertical connector's endpoint does — a bare price line with no pill
+   * would be misleading rather than merely incomplete.
+   */
+  private applyHorizontalLines(paneRect: PaneRectOrNull): void {
+    const tpY = this.anchorManager.drawnY(TARGET_TP);
+    const slY = this.anchorManager.drawnY(TARGET_SL);
+    const entryY = this.anchorManager.drawnY(TARGET_SUGGESTION);
+    this.applyHorizontalLine(this.hLineTp, tpY, paneRect);
+    this.applyHorizontalLine(this.hLineSl, slY, paneRect);
+    this.applyHorizontalLine(this.hLineEntry, entryY, paneRect);
+  }
+
+  /**
+   * Places the standalone order panel wherever the user last dragged it —
+   * free on both axes, no docking, no snap-back (§ user: the reference lets
+   * it sit anywhere on the chart). Unlike every other element here it is NOT
+   * price-anchored: it represents no price, so a chart scroll or rescale
+   * must leave it exactly where it is.
+   *
+   * Its resting position is expressed relative to the pane's bottom-left
+   * corner plus the drag offset, so a pane resize carries it along instead
+   * of stranding it against a viewport coordinate that no longer exists.
+   * The only constraint is a clamp keeping it inside the pane — without it,
+   * a shrinking pane could leave the panel (and therefore its drag grip)
+   * unreachable.
+   */
+  private applyOrderPanel(paneRect: PaneRectOrNull): void {
+    const el = this.orderPanel.element;
+    // Personal mode only (no orderEntry ⇒ nothing to trade from here), and
+    // never while collapsed to the puck or in a confirm step.
+    if (this.suggestion.orderEntry == null || paneRect === null) {
+      el.classList.add('tp-positioned--hidden');
+      return;
+    }
+    const offset = this.dragManager.getOffset(TARGET_ORDER_PANEL);
+    const panelWidth = el.offsetWidth;
+    const panelHeight = el.offsetHeight;
+    const rawX = paneRect.x + ORDER_PANEL_INSET_X_PX + offset.dx;
+    const minX = paneRect.x + ORDER_PANEL_EDGE_MARGIN_PX;
+    const maxX = Math.max(minX, paneRect.right - panelWidth - ORDER_PANEL_EDGE_MARGIN_PX);
+    const x = Math.min(Math.max(rawX, minX), maxX);
+    // Both axes work the same way: a resting position relative to a pane
+    // edge, plus the raw drag offset. The panel is anchored by its top-left
+    // corner, so the bottom-relative base subtracts its own height —
+    // otherwise it would hang however tall it happens to be below the pane.
+    // Clamping to the pane keeps it reachable after a resize, but is the
+    // ONLY thing that constrains where it can be dropped.
+    const rawY = paneRect.bottom - ORDER_PANEL_INSET_Y_PX - panelHeight + offset.dy;
+    const minY = paneRect.y + ORDER_PANEL_EDGE_MARGIN_PX;
+    const maxY = Math.max(minY, paneRect.bottom - panelHeight - ORDER_PANEL_EDGE_MARGIN_PX);
+    const y = Math.min(Math.max(rawY, minY), maxY);
+    el.classList.remove('tp-positioned--hidden');
+    el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  }
+
+  private applyHorizontalLine(
+    element: HTMLElement,
+    y: number | null,
+    paneRect: PaneRectOrNull,
+  ): void {
+    if (y === null || paneRect === null) {
+      element.classList.add('tp-positioned--hidden');
+      return;
+    }
+    element.classList.remove('tp-positioned--hidden');
+    element.style.transform = `translate3d(${paneRect.x}px, ${y}px, 0)`;
+    element.style.width = `${paneRect.right - paneRect.x}px`;
+  }
+
+  /** One half of the connector, drawn only over the span of it that's on the chart. */
+  private applyConnectorSegment(
+    element: HTMLElement,
+    endY: number | null,
+    pivotY: number,
+    x: number,
+    paneRect: PaneRectOrNull,
+  ): void {
+    const span = endY === null ? null : this.anchorManager.clipSegmentToPane(endY, pivotY, paneRect);
+    if (span === null) {
+      element.classList.add('tp-positioned--hidden');
+      return;
+    }
+    element.classList.remove('tp-positioned--hidden');
+    element.style.transform = `translate3d(${x}px, ${span.top}px, 0)`;
+    element.style.height = `${span.height}px`;
   }
 
   private applyManualLayout(): void {
@@ -641,6 +863,7 @@ export class WidgetRoot {
     this.tpPill.destroy();
     this.slPill.destroy();
     this.suggestionCard.destroy();
+    this.orderPanel.destroy();
     this.unsubscribeState?.();
     this.stateManager.destroy();
     this.host.destroy();

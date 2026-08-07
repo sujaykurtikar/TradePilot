@@ -24,8 +24,13 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+/** The ATM strike (nearest STRIKE_INTERVAL) implied by a spot price — shared with the personal-mode card so both read the same convention. */
+export function atmStrikeFromSpot(spot: number): number {
+  return Math.round(spot / STRIKE_INTERVAL) * STRIKE_INTERVAL;
+}
+
 export function buildDemoSuggestionConfig(spot: number): DemoSuggestionConfig {
-  const atmStrike = Math.round(spot / STRIKE_INTERVAL) * STRIKE_INTERVAL;
+  const atmStrike = atmStrikeFromSpot(spot);
   return {
     strikeLabel: `${atmStrike} CE`,
     entry: round2(spot),

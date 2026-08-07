@@ -25,7 +25,6 @@ interface TradePilotManifest {
   description: string;
   minimum_chrome_version: string;
   action: {
-    default_popup: string;
     default_icon: Record<string, string>;
   };
   icons: Record<string, string>;
@@ -60,7 +59,6 @@ const manifest: TradePilotManifest = {
     'On-chart trade widget for TradingView and Kotak Neo — suggested entry, TP/SL, one-click trade through your own wrapper API.',
   minimum_chrome_version: '111',
   action: {
-    default_popup: 'popup.html',
     default_icon: {
       '16': 'icons/16.png',
       '32': 'icons/32.png',
