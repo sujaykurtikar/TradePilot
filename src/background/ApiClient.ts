@@ -47,9 +47,23 @@ async function fetchGuarded<T>(
 
 export class ApiClient {
   private readonly baseUrl: string;
+  /**
+   * Which strategy's own logic should compute /recommend's signal, kept by
+   * the side panel's "applied strategies" (chrome.storage) via
+   * background/index.ts's subscription — null means the backend's own
+   * default strategy (today's behavior, unchanged for anyone who's never
+   * applied one). Backend-facing ids only (underscores) — normalizing
+   * from the extension's own mock ids is the caller's job, same as
+   * sidepanel.ts already does for catalog matching.
+   */
+  private activeStrategyId: string | null = null;
 
   constructor(config: ApiClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/+$/, '');
+  }
+
+  setActiveStrategyId(id: string | null): void {
+    this.activeStrategyId = id;
   }
 
   fetchChartState(signal: AbortSignal): Promise<Result<RawChartState, string>> {
@@ -57,6 +71,10 @@ export class ApiClient {
   }
 
   fetchRecommend(signal: AbortSignal): Promise<Result<RawRecommend, string>> {
-    return fetchGuarded(`${this.baseUrl}/recommend`, isRawRecommend, signal);
+    const strategyQuery =
+      this.activeStrategyId !== null
+        ? `?strategy_id=${encodeURIComponent(this.activeStrategyId)}`
+        : '';
+    return fetchGuarded(`${this.baseUrl}/recommend${strategyQuery}`, isRawRecommend, signal);
   }
 }

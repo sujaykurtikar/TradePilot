@@ -8,6 +8,7 @@
 
 import { StorageManager } from '../core/storage/StorageManager';
 import { DEFAULT_STORAGE } from '../core/storage/schema';
+import { SidePanelStorageManager } from '../core/storage/SidePanelStorageManager';
 import { registerMessageRouter } from './MessageRouter';
 import { TabRegistry } from './TabRegistry';
 import { ApiClient } from './ApiClient';
@@ -21,7 +22,13 @@ import { getLogger } from '../utils/logger';
 const log = getLogger('background:index');
 
 const storage = new StorageManager();
+const sidePanelStorage = new SidePanelStorageManager();
 const tabRegistry = new TabRegistry();
+
+/** Mirrors sidepanel.ts's own normalizeId() — the extension's mock strategy ids use hyphens, TradePilotBackend's are underscore_cased. */
+function normalizeStrategyId(id: string | null): string | null {
+  return id === null ? null : id.replace(/-/g, '_');
+}
 
 // §10 Q3: "Where does the API run? http://127.0.0.1:8000 assumes same
 // machine as the browser." Kept as a constant rather than a popup
@@ -100,6 +107,17 @@ registerMessageRouter({
 });
 
 poller.start();
+
+// P13-lite: whichever strategy the side panel has active drives /recommend
+// instead of TradePilotBackend's fixed default, the moment the user applies
+// one — no widget-rendering code changes needed, only which data feeds the
+// existing WidgetSuggestionData.tp/sl pipeline.
+void sidePanelStorage
+  .load()
+  .then((state) => apiClient.setActiveStrategyId(normalizeStrategyId(state.activeStrategyId)));
+sidePanelStorage.onChange((next) => {
+  apiClient.setActiveStrategyId(normalizeStrategyId(next.activeStrategyId));
+});
 
 // MV3 service workers can be terminated after ~30s of inactivity and
 // woken by an event; DataPoller's own setTimeout chain does NOT survive
