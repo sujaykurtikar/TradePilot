@@ -545,10 +545,17 @@ export class Bootstrap {
   private buildPersonalSuggestionData(mappedSymbol: string | null): WidgetSuggestionData {
     const livePrice = this.bridge?.lastBar()?.close ?? null;
 
+    // §7.1 "never extrapolate/guess": AnchorManager hides any pill whose
+    // price falls outside the chart's current visible range (priceToY
+    // legitimately returns null there). A 1m intraday view's visible
+    // range is often only ~0.3-0.5% wide, so seeding at ±0.5% (as this
+    // used to) reliably placed both pills off-screen — set, but invisible
+    // and undraggable until the user zoomed out. ±0.15% sits comfortably
+    // inside a typical 1m view while still being a real, adjustable level.
     if (this.personalLevels.tp === null && this.personalLevels.sl === null && livePrice !== null) {
       this.personalLevels = {
-        tp: Math.round(livePrice * 1.005 * 100) / 100,
-        sl: Math.round(livePrice * 0.995 * 100) / 100,
+        tp: Math.round(livePrice * 1.0015 * 100) / 100,
+        sl: Math.round(livePrice * 0.9985 * 100) / 100,
       };
     }
 
