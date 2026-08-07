@@ -333,6 +333,52 @@ describe('WidgetRoot — §P6t position-mode TP/SL drag', () => {
     expect(onPositionRiskDrag).not.toHaveBeenCalled();
   });
 
+  it('personal-mode drag commit resets the pill screen offset, so the next render lands exactly on the new price (not the new price PLUS the old drag delta)', async () => {
+    const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
+    widget = makeWidget({
+      bridge,
+      initialTradingMode: 'personal',
+      // Mirrors what Bootstrap.ts's real onManualLevelDragEnd callback does:
+      // synchronously feed the new price back in via updateSuggestion()
+      // before handleLevelDragEnd returns.
+      onManualLevelDragEnd: (variant, newPrice) => {
+        widget?.updateSuggestion({
+          symbolLabel: 'NIFTY CE',
+          livePrice: () => 24150,
+          tp: variant === 'tp' ? newPrice : 24150,
+          sl: variant === 'sl' ? newPrice : 24100,
+          onTrade: () => {},
+        });
+      },
+      suggestion: {
+        symbolLabel: 'NIFTY CE',
+        livePrice: () => 24150,
+        tp: 24150,
+        sl: 24100,
+        onTrade: () => {},
+      },
+    });
+    await widget.mount();
+
+    const shadow = document.getElementById('tradepilot-widget-host')?.shadowRoot;
+    const handle = shadow?.querySelector('.tp-pill--tp .tp-pill__handle') as HTMLElement;
+    const pill = shadow?.querySelector('.tp-pill--tp') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    handle.hasPointerCapture = vi.fn().mockReturnValue(true);
+
+    handle.dispatchEvent(
+      new PointerEvent('pointerdown', { pointerId: 1, clientX: 0, clientY: 0, button: 0 }),
+    );
+    handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, clientY: -50 }));
+    await nextFrame();
+
+    // New price is 24200 -> priceToY(24200) = 1000 - 24200 = -23200.
+    // If the -50 drag offset were still applied on top (the bug), this
+    // would instead read -23250.
+    expect(pill.style.transform).toContain('-23200');
+  });
+
   it('an open position still wins over personal mode — dragging goes to onPositionRiskDrag, not onManualLevelDragEnd', async () => {
     const bridge = makeStubBridge({ priceToY: (p) => 1000 - p, yToPrice: (y) => 1000 - y });
     const onManualLevelDragEnd = vi.fn();

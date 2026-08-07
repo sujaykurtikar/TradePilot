@@ -421,6 +421,13 @@ export class WidgetRoot {
       // destination.
       if (this.tradingMode === 'personal') {
         this.onManualLevelDragEnd?.(variant, newPrice);
+        // The commit above bakes offset.dy into the new suggestion.tp/sl
+        // (via Bootstrap's synchronous updateSuggestion call). The pill's
+        // screen offset must be zeroed right after, the same way
+        // setPosition() does for the position-mode branch below — otherwise
+        // next frame re-adds this SAME dy on top of the already-shifted
+        // price, so the pill visibly jumps past where it was dropped.
+        this.dragManager.hydrate(id, { dx: 0, dy: 0 });
       }
       return;
     }

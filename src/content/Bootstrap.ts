@@ -58,6 +58,15 @@ const SLIPPAGE_MIN_TOLERANCE = 0.5;
  * tick, used here as a stated assumption, not a confirmed value.
  */
 const TICK_SIZE = 0.05;
+/**
+ * Personal mode's default entry->TP and entry->SL gap, in index points,
+ * seeded once when the mode is entered/re-entered (§buildPersonalSuggestionData).
+ * Fixed points rather than a percentage: a 1m intraday chart's visible
+ * price range is often only ~100-150 points wide, so this needs to be a
+ * value the user actually asked for and can see, not a % that silently
+ * scales into the invisible-off-screen range the wider the index trades.
+ */
+const PERSONAL_LEVEL_GAP_POINTS = 50;
 
 interface ActiveConfirmContext {
   readonly suggestion: Suggestion;
@@ -537,25 +546,18 @@ export class Bootstrap {
    * Personal mode: idle, no strategy signal, no on-chart picker. Direction
    * (BUY) and option type (CE) are fixed — the only per-product decision
    * this mode makes for the user. TP/SL are seeded once from live price
-   * (±0.5%) so something is shown immediately, then held fixed until the
-   * user drags a pill (WidgetRoot's onManualLevelDragEnd) — a later price
-   * tick must not silently re-anchor a level the user may have already
-   * adjusted or is about to.
+   * (§PERSONAL_LEVEL_GAP_POINTS below) so something is shown immediately,
+   * then held fixed until the user drags a pill (WidgetRoot's
+   * onManualLevelDragEnd) — a later price tick must not silently
+   * re-anchor a level the user may have already adjusted or is about to.
    */
   private buildPersonalSuggestionData(mappedSymbol: string | null): WidgetSuggestionData {
     const livePrice = this.bridge?.lastBar()?.close ?? null;
 
-    // §7.1 "never extrapolate/guess": AnchorManager hides any pill whose
-    // price falls outside the chart's current visible range (priceToY
-    // legitimately returns null there). A 1m intraday view's visible
-    // range is often only ~0.3-0.5% wide, so seeding at ±0.5% (as this
-    // used to) reliably placed both pills off-screen — set, but invisible
-    // and undraggable until the user zoomed out. ±0.15% sits comfortably
-    // inside a typical 1m view while still being a real, adjustable level.
     if (this.personalLevels.tp === null && this.personalLevels.sl === null && livePrice !== null) {
       this.personalLevels = {
-        tp: Math.round(livePrice * 1.0015 * 100) / 100,
-        sl: Math.round(livePrice * 0.9985 * 100) / 100,
+        tp: Math.round((livePrice + PERSONAL_LEVEL_GAP_POINTS) * 100) / 100,
+        sl: Math.round((livePrice - PERSONAL_LEVEL_GAP_POINTS) * 100) / 100,
       };
     }
 
