@@ -19,6 +19,22 @@ function format(scope: string, message: string): string {
   return `${PREFIX}[${scope}] ${message}`;
 }
 
+/**
+ * chrome://extensions' flat "Errors" page can't render a console.error's
+ * second (object) argument the way DevTools does — it just falls back to
+ * "[object Object]", swallowing whatever's in `fields` (e.g. the actual
+ * underlying error text). Folding fields into the message string itself
+ * means that page always shows something readable; the object is still
+ * passed alongside for proper inspection in a real DevTools console.
+ */
+function stringifyFields(fields: LogFields): string {
+  try {
+    return JSON.stringify(fields) ?? '{}';
+  } catch {
+    return '{ "error": "unserializable fields" }';
+  }
+}
+
 export interface Logger {
   debug(message: string, fields?: LogFields): void;
   info(message: string, fields?: LogFields): void;
@@ -40,7 +56,7 @@ function createLogger(scope: string): Logger {
             ? console.warn
             : console.error;
     if (fields && Object.keys(fields).length > 0) {
-      consoleFn(line, fields);
+      consoleFn(`${line} ${stringifyFields(fields)}`, fields);
     } else {
       consoleFn(line);
     }
