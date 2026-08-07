@@ -555,9 +555,10 @@ export class Bootstrap {
     const livePrice = this.bridge?.lastBar()?.close ?? null;
 
     if (this.personalLevels.tp === null && this.personalLevels.sl === null && livePrice !== null) {
+      const gap = this.safePersonalLevelGap();
       this.personalLevels = {
-        tp: Math.round((livePrice + PERSONAL_LEVEL_GAP_POINTS) * 100) / 100,
-        sl: Math.round((livePrice - PERSONAL_LEVEL_GAP_POINTS) * 100) / 100,
+        tp: Math.round((livePrice + gap) * 100) / 100,
+        sl: Math.round((livePrice - gap) * 100) / 100,
       };
     }
 
@@ -588,6 +589,38 @@ export class Bootstrap {
       onTrade: () => this.handleTradeClick(),
       onTradeFocusChange: (focused) => this.handleTradeFocusChange(focused),
     };
+  }
+
+  /**
+   * A fixed points gap that fits a wide-zoom chart can still be entirely
+   * off a narrow-zoom 1m chart's visible price axis — priceToY has no
+   * value to map an out-of-range price to, so AnchorManager (correctly,
+   * per §7.1) hides a pill whose price is off-screen. That read as
+   * "TP/SL appeared, then vanished" even though the price itself never
+   * moved. Reads the chart's actual currently-visible price range (via
+   * paneRect + yToPrice, the same coordinate math the rest of the widget
+   * already trusts) and shrinks the gap to fit inside it, so the initial
+   * seed lands somewhere visible rather than gambling on a guessed
+   * timeframe. Falls back to the full default gap if the range can't be
+   * read (matches the "never guess, but don't stall on a maybe" pattern
+   * used elsewhere in this file).
+   */
+  private safePersonalLevelGap(): number {
+    const bridge = this.bridge;
+    if (bridge === null) return PERSONAL_LEVEL_GAP_POINTS;
+    const paneRect = bridge.paneRect();
+    if (paneRect === null) return PERSONAL_LEVEL_GAP_POINTS;
+    const topPrice = bridge.yToPrice(paneRect.y);
+    const bottomPrice = bridge.yToPrice(paneRect.bottom);
+    if (topPrice === null || bottomPrice === null) return PERSONAL_LEVEL_GAP_POINTS;
+
+    const visibleRange = Math.abs(topPrice - bottomPrice);
+    // Leave headroom so the pill itself (not just the price line) stays
+    // clear of the pane edge, and so entry/TP/SL don't crowd on top of
+    // each other on a very tight zoom.
+    const maxSafeGap = visibleRange * 0.35;
+    if (maxSafeGap <= 0) return PERSONAL_LEVEL_GAP_POINTS;
+    return Math.min(PERSONAL_LEVEL_GAP_POINTS, maxSafeGap);
   }
 
   /** §3/R-OCO: "the single most dangerous state in the system" — open position(s) with no reachable backend to enforce their SL/TP. */
