@@ -16,14 +16,13 @@ describe('migrateStorage — must never throw on bad input (§7.1/§7.2)', () =>
     expect(migrateStorage(42)).toEqual(DEFAULT_STORAGE);
   });
 
-  it('passes a valid current-version (v3) record through unchanged', () => {
+  it('passes a valid current-version (v2) record through unchanged', () => {
     const valid = {
-      version: 3 as const,
+      version: 2 as const,
       enabled: false,
       widgetCollapsed: true,
       widgetOffsets: { 'level-pill-tp': { dx: 5, dy: -3 } },
       widgetHiddenReason: 'Symbol "XYZ" is not in the symbol map.',
-      tradingMode: 'personal' as const,
     };
     expect(migrateStorage(valid)).toEqual(valid);
   });
@@ -33,7 +32,7 @@ describe('migrateStorage — must never throw on bad input (§7.1/§7.2)', () =>
     expect(migrateStorage(fromTheFuture)).toEqual(DEFAULT_STORAGE);
   });
 
-  it('migrates a real v1 record to v3 — the actual exercise of the migration scaffold (§P1)', () => {
+  it('migrates a real v1 record to v2 — the actual exercise of the migration scaffold (§P1)', () => {
     const storedV1 = {
       version: 1 as const,
       enabled: false,
@@ -42,31 +41,11 @@ describe('migrateStorage — must never throw on bad input (§7.1/§7.2)', () =>
     };
     const migrated = migrateStorage(storedV1);
     expect(migrated).toEqual({
-      version: 3,
+      version: 2,
       enabled: false,
       widgetCollapsed: true,
       widgetOffsets: { 'level-pill-sl': { dx: -2, dy: 4 } },
       widgetHiddenReason: null, // new field defaults to null — no v1 value to carry forward
-      tradingMode: 'strategy', // new field defaults to 'strategy' — today's existing behavior
-    });
-  });
-
-  it('migrates a v2 record to v3, defaulting tradingMode to "strategy" (today\'s existing behavior)', () => {
-    const storedV2 = {
-      version: 2 as const,
-      enabled: true,
-      widgetCollapsed: false,
-      widgetOffsets: {},
-      widgetHiddenReason: 'Symbol "ABC" is not in the symbol map.',
-    };
-    const migrated = migrateStorage(storedV2);
-    expect(migrated).toEqual({
-      version: 3,
-      enabled: true,
-      widgetCollapsed: false,
-      widgetOffsets: {},
-      widgetHiddenReason: 'Symbol "ABC" is not in the symbol map.',
-      tradingMode: 'strategy',
     });
   });
 });

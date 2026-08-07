@@ -437,8 +437,6 @@ async function init(): Promise<void> {
 
   const widgetState = await widgetStorage.load();
   byId<HTMLInputElement>('header-enabled-toggle').checked = widgetState.enabled;
-  byId<HTMLInputElement>('header-trading-mode-toggle').checked =
-    widgetState.tradingMode === 'personal';
 
   byId<HTMLButtonElement>('tab-signals').addEventListener('click', () => switchTab('signals'));
   byId<HTMLButtonElement>('tab-strategies').addEventListener('click', () => switchTab('strategies'));
@@ -453,11 +451,6 @@ async function init(): Promise<void> {
 
   byId<HTMLInputElement>('header-enabled-toggle').addEventListener('change', (event) => {
     void widgetStorage.patch({ enabled: (event.target as HTMLInputElement).checked });
-  });
-
-  byId<HTMLInputElement>('header-trading-mode-toggle').addEventListener('change', (event) => {
-    const checked = (event.target as HTMLInputElement).checked;
-    void widgetStorage.patch({ tradingMode: checked ? 'personal' : 'strategy' });
   });
 
   const infoButton = byId<HTMLButtonElement>('header-info-button');
@@ -531,7 +524,6 @@ async function init(): Promise<void> {
 
   widgetStorage.onChange((next) => {
     byId<HTMLInputElement>('header-enabled-toggle').checked = next.enabled;
-    byId<HTMLInputElement>('header-trading-mode-toggle').checked = next.tradingMode === 'personal';
   });
 
   const status = await sendToBackground<StatusResponse>({ type: 'tradepilot/get-status' });

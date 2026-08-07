@@ -10,7 +10,6 @@ import {
   type StorageSchema,
   type StorageSchemaV1,
   type StorageSchemaV2,
-  type StorageSchemaV3,
 } from './schema';
 import { getLogger } from '../../utils/logger';
 
@@ -29,27 +28,9 @@ function upgradeV1ToV2(input: unknown): StorageSchemaV2 {
   };
 }
 
-/**
- * v2 -> v3 adds `tradingMode` (see schema.ts's StorageSchemaV3 doc
- * comment) — defaults to 'strategy' so an existing install keeps today's
- * exact behavior until the user deliberately switches modes.
- */
-function upgradeV2ToV3(input: unknown): StorageSchemaV3 {
-  const v2 = input as StorageSchemaV2;
-  return {
-    version: 3,
-    enabled: v2.enabled,
-    widgetCollapsed: v2.widgetCollapsed,
-    widgetOffsets: v2.widgetOffsets,
-    widgetHiddenReason: v2.widgetHiddenReason,
-    tradingMode: 'strategy',
-  };
-}
-
 /** Keyed by the version a migration upgrades FROM. */
 const MIGRATIONS: Record<number, Migration> = {
   1: upgradeV1ToV2,
-  2: upgradeV2ToV3,
 };
 
 /** Best-effort: unknown/corrupt input falls back to defaults rather than throwing (§7.1/§7.2). */
